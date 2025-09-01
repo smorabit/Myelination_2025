@@ -1,0 +1,51 @@
+#!/bin/bash
+#SBATCH --job-name=acute_vs_control
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 64G
+#SBATCH --array=1-8
+#SBATCH --time=18:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat="/dfs7/swaruplab/smorabit/collab/AMRF/analysis/human_integration/data/Schirmer_2019.rds"
+outdir="/dfs7/swaruplab/smorabit/collab/AMRF/analysis/human_integration/DEGs/data/Schirmer_acute_vs_inactive/"
+type="conditions"
+condition="Inflammatory.demyelinating_lesion_stage"
+cluster="cell_type"
+latent="Sample,nCount_RNA,pct_counts_mt,RIN,PMI"
+
+mkdir $outdir
+
+################################################################################
+# Acute-chronic active vs Control
+################################################################################
+
+name="acute_vs_inactive"
+group1="Acute-chronic_active"
+group2="Chronic_inactive"
+
+# launch R script:
+Rscript --vanilla /dfs7/swaruplab/smorabit/analysis/ADDS_2021/bin/parallel_DEGs.R \
+  --seurat $seurat \
+  --outdir $outdir \
+  --type $type \
+  --cluster $cluster \
+  --condition $condition \
+  --name $name \
+  --index $SLURM_ARRAY_TASK_ID \
+  --group1 $group1 \
+  --group2 $group2 \
+  --test "MAST" \
+  --pos "FALSE" \
+  --pct 0 \
+  --logfc 0 \
+  --verbose "TRUE" \
+  --latent $latent \
+  --cores 16

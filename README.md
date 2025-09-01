@@ -3,8 +3,13 @@
 
 Dimas, Morabito, & Rawji et al. 2025 (TODO: Link to the manuscript here)
 
+## Abstract
+
 *In demyelinating diseases such as multiple sclerosis, the body's ability to replace damaged myelin sheaths—a process termed remyelination—is crucial for functional recovery. While remyelination is robust in young individuals, it becomes less efficient with age, and is linked to progressive disability. Despite its importance, the precise gene regulatory network that controls this complex process and how it fails with aging remains largely unknown. To address this gap, we created a comprehensive single-nucleus RNA and ATAC sequencing dataset of remyelination in young and aged mice using the lysolecithin model. Our integrated analysis allowed us to map the GRN that drives efficient remyelination by oligodendrocyte lineage cells in the CNS of young mice. We identified 10 dynamic gene modules with distinct biological functions and temporal expression patterns throughout the oligodendrocyte maturation trajectory. Importantly, our analysis revealed significant age-dependent changes in the activity of these modules, highlighting specific gene networks that are dysregulated with age.  We then pinpointed key transcription factors at critical nodes of this network that are dysregulated with age. We validated these findings by showing that similar TF dysregulations occur in human MS lesions by integrating our data with publicly available datasets. Functional validation in primary oligodendrocyte progenitor cells confirmed that altering the expression of these TFs significantly impacts OPC function and their ability to proliferate and differentiate. This study is the first to comprehensively map the GRN of remyelination and pinpoint TFs that act as central nodes and are key contributors to age-related remyelination failure. Our findings provide a foundational understanding of this critical regenerative process and age-related changes relevant to older patients and those with chronic MS who currently have limited therapeutic options.*
 
+## About this repository
+
+TODO: Briefly describe the layout of the repo.
 
 ## 🖥️ Data generated in this study 
 
@@ -48,9 +53,11 @@ Raw and processed snATAC-seq and snRNA-seq datasets have been deposited on the N
 
 ## Dynamically altered TFs in ageing and disease (Fig. 4)
 
-* Mouse snRNA-seq DEGs 
-* Human snRNA-seq DEGs 
+* Re-processing human snRNA-seq data
+    * Pre-processing with Kallisto (TODO: get these files from the cross-disease repo).
+    * Clustering analysis (TODO: Need to get the .ipynb files from the UCI HPC. Possibly already have them in the cross disease repo?).
+* [Mouse snRNA-seq DEGs](snRNA/DEGs/) 
+* [Human snRNA-seq DEGs](human/DEGs/)
 * Prioritize TFs
-* Plot TF Regulatory networks 
 
 ## Bulk RNA-seq (Fig. 5)

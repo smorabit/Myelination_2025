@@ -1,0 +1,132 @@
+#!/bin/bash
+#SBATCH --job-name=FindMarkers
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 48G
+#SBATCH --array=1-15
+#SBATCH --time=72:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf_seurat.rds"
+outdir="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/DEGs/old_vs_young/"
+type="conditions"
+condition="Group.Time"
+cluster="cellchat_clusters"
+latent="percent.mt,nCount_RNA"
+
+################################################################################
+# Naive
+################################################################################
+
+name="Naive"
+group1="Old_Naive"
+group2="Young_Naive"
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/collab/AMRF/bin/parallel_DEGs.R \
+  --seurat $seurat \
+  --outdir $outdir \
+  --type $type \
+  --cluster $cluster \
+  --condition $condition \
+  --name $name \
+  --index $SLURM_ARRAY_TASK_ID \
+  --group1 $group1 \
+  --group2 $group2 \
+  --test "MAST" \
+  --pos "FALSE" \
+  --pct 0 \
+  --logfc 0 \
+  --verbose "TRUE" \
+  --latent $latent \
+  --cores 16
+
+
+################################################################################
+# Day 5
+################################################################################
+
+name="Day5"
+group1="Old_Day.5"
+group2="Young_Day.5"
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/collab/AMRF/bin/parallel_DEGs.R \
+  --seurat $seurat \
+  --outdir $outdir \
+  --type $type \
+  --cluster $cluster \
+  --condition $condition \
+  --name $name \
+  --index $SLURM_ARRAY_TASK_ID \
+  --group1 $group1 \
+  --group2 $group2 \
+  --test "MAST" \
+  --pos "FALSE" \
+  --pct 0 \
+  --logfc 0 \
+  --verbose "TRUE" \
+  --latent $latent \
+  --cores 16
+
+
+################################################################################
+# Day 14
+################################################################################
+
+name="Day14"
+group1="Old_Day.14"
+group2="Young_Day.14"
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/collab/AMRF/bin/parallel_DEGs.R \
+--seurat $seurat \
+--outdir $outdir \
+--type $type \
+--cluster $cluster \
+--condition $condition \
+--name $name \
+--index $SLURM_ARRAY_TASK_ID \
+--group1 $group1 \
+--group2 $group2 \
+--test "MAST" \
+--pos "FALSE" \
+--pct 0 \
+--logfc 0 \
+--verbose "TRUE" \
+--latent $latent \
+--cores 16
+
+################################################################################
+# Day 30
+################################################################################
+
+name="Day30"
+group1="Old_Day.30"
+group2="Young_Day.30"
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/collab/AMRF/bin/parallel_DEGs.R \
+--seurat $seurat \
+--outdir $outdir \
+--type $type \
+--cluster $cluster \
+--condition $condition \
+--name $name \
+--index $SLURM_ARRAY_TASK_ID \
+--group1 $group1 \
+--group2 $group2 \
+--test "MAST" \
+--pos "FALSE" \
+--pct 0 \
+--logfc 0 \
+--verbose "TRUE" \
+--latent $latent \
+--cores 16

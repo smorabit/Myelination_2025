@@ -1,0 +1,51 @@
+#!/bin/bash
+#SBATCH --job-name=absinta
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 64G
+#SBATCH --array=1-8
+#SBATCH --time=18:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat="/dfs7/swaruplab/smorabit/collab/AMRF/analysis/human_integration/data/Absinta_2021.rds"
+outdir="/dfs7/swaruplab/smorabit/collab/AMRF/analysis/human_integration/DEGs/data/Absinta_inactive_vs_control/"
+type="conditions"
+condition="tissue_sample"
+cluster="cell_type"
+latent="Sample,nCount_RNA,pct_counts_mt,pmi_hours"
+
+mkdir $outdir
+
+################################################################################
+# Acute-chronic active vs Control
+################################################################################
+
+name="inactive_vs_control"
+group1="chronic_inactive_MS_lesion_edge"
+group2="control_white_matter"
+
+# launch R script:
+Rscript --vanilla /dfs7/swaruplab/smorabit/analysis/ADDS_2021/bin/parallel_DEGs.R \
+  --seurat $seurat \
+  --outdir $outdir \
+  --type $type \
+  --cluster $cluster \
+  --condition $condition \
+  --name $name \
+  --index $SLURM_ARRAY_TASK_ID \
+  --group1 $group1 \
+  --group2 $group2 \
+  --test "MAST" \
+  --pos "FALSE" \
+  --pct 0 \
+  --logfc 0 \
+  --verbose "TRUE" \
+  --latent $latent \
+  --cores 16

@@ -1,0 +1,186 @@
+
+
+Load Schirmer et al & Absinta et al datasets
+
+```{r eval=FALSE}
+
+# load R packages
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(RColorBrewer)
+library(patchwork)
+library(ggpubr)
+library(tictoc)
+library(RColorBrewer)
+library(Hmisc)
+library(corrplot)
+library(enrichR)
+library(GeneOverlap)
+library(WGCNA)
+enableWGCNAThreads(nThreads = 8)
+theme_set(theme_cowplot())
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank(),
+  plot.title = element_text(hjust = 0.5)
+)
+
+
+setwd('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/human_integration/')
+
+# output directories
+data_dir <- "data/"
+fig_dir <- 'figures/'
+
+# location of the Zhou et al data processed with scanpy:
+indir <- '/dfs7/swaruplab/shared_lab/cross-disorder/analysis/individual/Schirmer_2019/data/'
+
+
+
+# load the UMI counts gene expression matrix
+X <- Matrix::readMM(paste0(indir,'Schirmer_2019_counts.mtx'))
+
+# load harmony matrix
+X_harmony <- read.table(paste0(indir, 'Schirmer_2019_processed_harmony.csv'), sep=',', header=TRUE, row.names=1)
+
+# load the cell & gene metadata table:
+cell_meta <- read.csv(paste0(indir, 'Schirmer_2019_processed_obs.csv'))
+rownames(cell_meta) <- cell_meta$X; cell_meta <- cell_meta %>% select(-c(X))
+
+gene_meta <- read.table(paste0(indir, 'Schirmer_2019_processed_var.csv'), sep=',', header=TRUE, row.names=1)
+
+# get the umap from cell_meta:
+umap <- cell_meta[,c('UMAP_1', 'UMAP_2')]
+
+# set the rownames and colnames for the expression matrix:
+# for Seurat, rows of X are genes, cols of X are cells
+colnames(X) <- rownames(cell_meta)
+rownames(X) <- rownames(gene_meta)
+rownames(X_harmony) <- rownames(cell_meta)
+rownames(umap) <- rownames(cell_meta)
+
+# create a Seruat object:
+seurat_obj <- Seurat::CreateSeuratObject(
+  counts = X,
+  meta.data = cell_meta,
+  assay = "RNA",
+  project = "Schirmer_2019",
+  min.features = 0,
+  min.cells = 0
+)
+
+# set harmony
+seurat_obj@reductions$harmony <- Seurat::CreateDimReducObject(
+  embeddings = as.matrix(X_harmony),
+  key="PC",
+  assay="RNA"
+)
+
+# set UMAP
+seurat_obj@reductions$umap <- Seurat::CreateDimReducObject(
+  embeddings = as.matrix(umap),
+  key="UMAP",
+  assay="RNA"
+)
+
+# fix the condition
+seurat_obj$Inflammatory.demyelinating_lesion_stage <- gsub(' ', '_', seurat_obj$Inflammatory.demyelinating_lesion_stage)
+
+# normalize
+seurat_obj <- NormalizeData(seurat_obj)
+
+# make a test plot of the umap:
+p1 <- DimPlot(seurat_obj, group.by='cell_type', label=TRUE, pt.size=0.1) + NoLegend() + umap_theme
+pdf(paste0(fig_dir, 'test_Schirmer_umap.pdf'),  width=6, height=6, useDingbats=FALSE)
+p1
+dev.off()
+
+# save data:
+saveRDS(seurat_obj, file=paste0(data_dir, 'Schirmer_2019.rds'))
+
+
+
+```
+
+Load Absinta 2021 dataset into Seurat:
+
+```{r eval=FALSE}
+
+# location of the Absinta et al data processed with scanpy:
+indir <- '/dfs7/swaruplab/shared_lab/cross-disorder/analysis/individual/Absinta_2021/data/'
+
+# load the UMI counts gene expression matrix
+X <- Matrix::readMM(paste0(indir,'Absinta_2021_counts.mtx'))
+
+# load harmony matrix
+X_harmony <- read.table(paste0(indir, 'Absinta_2021_processed_harmony.csv'), sep=',', header=TRUE, row.names=1)
+
+# load the cell & gene metadata table:
+cell_meta <- read.csv(paste0(indir, 'Absinta_2021_processed_obs.csv'), sep=',')
+rownames(cell_meta) <- cell_meta$X; cell_meta <- cell_meta %>% select(-c(X))
+
+gene_meta <- read.table(paste0(indir, 'Absinta_2021_processed_var.csv'), sep=',', header=TRUE, row.names=1)
+
+# get the umap from cell_meta:
+umap <- cell_meta[,c('UMAP_1', 'UMAP_2')]
+
+# set the rownames and colnames for the expression matrix:
+# for Seurat, rows of X are genes, cols of X are cells
+colnames(X) <- rownames(cell_meta)
+rownames(X) <- rownames(gene_meta)
+rownames(X_harmony) <- rownames(cell_meta)
+rownames(umap) <- rownames(cell_meta)
+
+# create a Seruat object:
+seurat_obj <- Seurat::CreateSeuratObject(
+  counts = X,
+  meta.data = cell_meta,
+  assay = "RNA",
+  project = "Absinta_2021",
+  min.features = 0,
+  min.cells = 0
+)
+
+# set harmony
+seurat_obj@reductions$harmony <- Seurat::CreateDimReducObject(
+  embeddings = as.matrix(X_harmony),
+  key="PC",
+  assay="RNA"
+)
+
+# set UMAP
+seurat_obj@reductions$umap <- Seurat::CreateDimReducObject(
+  embeddings = as.matrix(umap),
+  key="UMAP",
+  assay="RNA"
+)
+
+# normalize expression
+seurat_obj <- NormalizeData(seurat_obj)
+
+# make a test plot of the umap:
+p1 <- DimPlot(seurat_obj, group.by='annotation', label=TRUE, pt.size=0.1) + NoLegend() + umap_theme + ggtitle('')
+pdf(paste0(fig_dir, 'Absinta_umap.pdf'),  width=7, height=7, useDingbats=FALSE)
+p1
+dev.off()
+
+
+# save data:
+saveRDS(seurat_obj, file=paste0(data_dir, 'Absinta_2021.rds'))
+
+
+```
