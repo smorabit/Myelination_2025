@@ -1,0 +1,388 @@
+
+```{r eval=FALSE}
+
+library(tidyverse)
+library(ArchR)
+
+setwd("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/ATAC")
+
+# set archR genome
+addArchRGenome("mm10")
+addArchRThreads(threads = 32)
+
+
+```
+
+## Create `.arrow` files and ArchR project
+
+```{r eval=FALSE}
+
+# the path to a directory containing all 16 cellranger output directories
+cellranger_dir <- '/dfs3b/swaruplab/smorabit/collab/AMRF/data/cellranger-atac-count/'
+sample_names <- dir(cellranger_dir)
+sample_files <- paste0(cellranger_dir, sample_names, '/outs/fragments.tsv.gz')
+
+# run function to create arrow files, including tile matrix and genescore matrix
+ArrowFiles <- createArrowFiles(
+  inputFiles = sample_files,
+  sampleNames = sample_names,
+  minTSS = 4, 
+  minFrags = 1000,
+  addTileMat = TRUE,
+  addGeneScoreMat = TRUE
+)
+
+# identify doublets in each cluster
+doubScores <- addDoubletScores(
+    input = ArrowFiles,
+    k = 10, 
+    knnMethod = "UMAP", 
+    LSIMethod = 1
+)
+
+# create archr project
+proj <- ArchRProject(
+  ArrowFiles = ArrowFiles,
+  outputDirectory = "ATAC",
+  copyArrows = TRUE 
+)
+
+# filter doublets:
+proj <- filterDoublets(proj)
+
+# add sample meta-data
+sample_meta <- read.csv('/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/metadata.csv', stringsAsFactors=FALSE)
+sample_meta$Sample.Name <- ifelse(sample_meta$Sample.Name %in% c('O_Naive_1', 'Y_Naive_1'),  gsub('_1', '', sample_meta$Sample.Name), sample_meta$Sample.Name)
+rownames(sample_meta) <- sample_meta$Sample.Name
+
+# add columns
+proj@cellColData$Group <- sample_meta[as.character(proj@cellColData$Sample),'Group']
+proj@cellColData$Batch <- paste0('Batch_', sample_meta[as.character(proj@cellColData$Sample),'snRNAseq.Batch'])
+proj@cellColData$Timepoint <- sample_meta[as.character(proj@cellColData$Sample),'Time.point']
+
+```
+
+Dimensionality reduction and clustering
+
+```{r eval=FALSE}
+
+# LSI
+proj <- addIterativeLSI(
+    ArchRProj = proj,
+    useMatrix = "TileMatrix",
+    name = "IterativeLSI",
+    iterations = 2,
+    clusterParams = list( #See Seurat::FindClusters
+        resolution = c(0.2),
+        sampleCells = 10000,
+        n.start = 10
+    ),
+    varFeatures = 25000,
+    dimsToUse = 1:30
+)
+
+proj<- addHarmony(
+    ArchRProj = proj,
+    reducedDims = "IterativeLSI",
+    name = "Harmony",
+    groupBy = "Batch",
+    force=TRUE
+)
+
+# clustering
+proj <- addClusters(
+    input = proj,
+    reducedDims = "Harmony",
+    method = "Seurat",
+    name = "Clusters",
+    resolution = 0.8,
+    force=TRUE
+)
+
+# UMAP
+proj <- addUMAP(
+    ArchRProj = proj,
+    reducedDims = "Harmony",
+    name = "UMAP",
+    nNeighbors = 30,
+    minDist = 0.5,
+    metric = "cosine",
+    force=TRUE
+)
+
+```
+
+Plot initial clusters
+
+```{r eval=FALSE}
+
+p1 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name  = "Sample", embedding = "UMAP")
+p2 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Batch", embedding = "UMAP")
+p3 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Clusters", embedding = "UMAP")
+
+plotPDF(p1,p2,p3, name = "Plot-UMAP-Sample-Clusters.pdf", ArchRProj = proj, addDOC = FALSE, width = 5, height = 5)
+
+p1 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name  = "DoubletEnrichment", embedding = "UMAP")
+plotPDF(p1, name = "Plot-UMAP-DoubletEnrich.pdf", ArchRProj = proj, addDOC = FALSE, width = 5, height = 5)
+
+################################################################################
+# Plot UMAP colored by cluster and split by Sample
+################################################################################
+
+library(ggpubr)
+library(patchwork)
+
+proj@cellColData$UMAP1 <- proj@embeddings$UMAP$df[,1]
+proj@cellColData$UMAP2 <- proj@embeddings$UMAP$df[,2]
+
+
+p1 <- proj@cellColData %>% as.data.frame %>%
+  subset(Batch == 'Batch_1') %>%
+  ggplot(aes(x=UMAP1, y=UMAP2, color=Clusters)) +
+  geom_point(alpha=0.25, size=0.25)+ theme_pubr() +
+  theme(
+    axis.text.x=element_blank(),
+    axis.text.y=element_blank(),
+    axis.ticks=element_blank(),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  facet_wrap(~Sample, ncol=4) + NoLegend()+ ggtitle('Batch 1')
+
+p2 <- proj@cellColData %>% as.data.frame %>%
+  subset(Batch == 'Batch_2') %>%
+  ggplot(aes(x=UMAP1, y=UMAP2, color=Clusters)) +
+  geom_point(alpha=0.25, size=0.25) + theme_pubr() +
+  theme(
+    axis.text.x=element_blank(),
+    axis.text.y=element_blank(),
+    axis.ticks=element_blank(),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  facet_wrap(~Sample, ncol=4) + NoLegend() + ggtitle('Batch 2')
+
+
+pdf('Franklin_ATAC/Plots/umap_samples_split.pdf', width=12, height=12)
+p1 / p2 + plot_annotation(title='Clusters split by batch and samples', theme=theme(plot.title = element_text(hjust = 0.5)))
+dev.off()
+
+p1 <- plotGroups(
+    ArchRProj = proj,
+    groupBy = "Clusters",
+    colorBy = "cellColData",
+    name = "DoubletEnrichment",
+    plotAs = "violin",
+    alpha = 0.4,
+    addBoxPlot = TRUE
+   )
+plotPDF(p1, name = "Plot-Vln-DoubletEnrich.pdf", ArchRProj = proj, addDOC = FALSE, width = 10, height = 5)
+
+# based on this remove clusters 4, 12, 23, 24 as doublet clusters
+cells_to_keep <- proj@cellColData %>% as.data.frame %>% subset(Clusters %ni% c('C4', 'C12', 'C23', 'C24')) %>% rownames
+
+# subset archr project
+proj <- subsetCells(proj, cells_to_keep)
+
+# re-compute UMAP
+proj <- addUMAP(
+    ArchRProj = proj,
+    reducedDims = "Harmony",
+    name = "UMAP",
+    nNeighbors = 30,
+    minDist = 0.5,
+    metric = "cosine",
+    force=TRUE
+)
+
+p1 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name  = "Sample", embedding = "UMAP")
+p2 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Batch", embedding = "UMAP")
+p3 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Clusters", embedding = "UMAP")
+
+plotPDF(p1,p2,p3, name = "Plot-UMAP-Sample-Clusters-Filtered.pdf", ArchRProj = proj, addDOC = FALSE, width = 5, height = 5)
+
+proj <- saveArchRProject(ArchRProj = proj)
+
+```
+
+Call peaks within clusters 
+
+```{r eval=FALSE}
+
+proj <- addGroupCoverages(ArchRProj = proj, groupBy = "Clusters")
+
+# call peaks:
+pathToMacs2 <- findMacs2()
+proj <- addReproduciblePeakSet(
+    ArchRProj = proj,
+    groupBy = "Clusters",
+    pathToMacs2 = pathToMacs2
+)
+
+# add peaks matrix
+proj <- addPeakMatrix(proj)
+proj <- saveArchRProject(ArchRProj = proj)
+
+```
+
+## Convert to Seurat / Signac format:
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(Signac)
+library(EnsDb.Mmusculus.v79)
+
+fragments_dir <- '/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/ATAC/cellRanger_Fragments/'
+
+# get peak matrix
+peak_matrix <- getMatrixFromProject(proj, useMatrix='PeakMatrix')
+pm <- assays(peak_matrix)$PeakMatrix
+rownames(pm) <- paste0(as.character(seqnames(proj@peakSet)), '-', as.character(start(proj@peakSet)), '-', as.character(end(proj@peakSet)))
+
+# get the gene annotation for the Seurat object
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotations) <- 'UCSC'
+genome(annotations) <- "mm10"
+
+# get pseudo-expression matrix
+# this does not work right now but later I could just make a fresh archr project to get it
+gene_matrix <- getMatrixFromProject(proj, useMatrix='GeneScoreMatrix')
+
+################################################################################
+# Create seurat object
+################################################################################
+
+samples <- unique(proj@cellColData$Sample)
+
+seurat_list <- lapply(samples, function(cur_sample){
+  print(cur_sample)
+  #cur_sample <- 'Y_Naive'
+  cur_fragments <- paste0(fragments_dir, cur_sample, '/outs/fragments.tsv.gz')
+
+  cur_pm <- pm[,grepl(paste0(cur_sample, '#'), colnames(pm))]
+  cur_meta <- proj@cellColData %>% as.data.frame %>% subset(Sample == cur_sample)
+
+  # change colnames:
+  colnames(cur_pm) <- do.call(rbind, str_split(colnames(cur_pm), '#'))[,2]
+  rownames(cur_meta) <- do.call(rbind, str_split(rownames(cur_meta), '#'))[,2]
+  print(dim(cur_pm))
+
+  # create chromatin assay
+  cur_chromatin <- CreateChromatinAssay(
+    counts=cur_pm,
+    sep = c('-', '-'),
+    fragments=cur_fragments,
+    ranges=proj@peakSet,
+    genome='mm10',
+    annotation = annotations
+  )
+
+  # create a new Seurat obj with only the archR peaks:
+  cur_atac <- CreateSeuratObject(
+    cur_chromatin,
+    assay='peaks',
+    meta.data = cur_meta,
+  )
+
+})
+
+# merge objects
+seurat_obj <- merge(
+  x=seurat_list[[1]], y=seurat_list[2:length(seurat_list)],
+  add.cell.ids = samples
+)
+
+# NOTE: Check that the cells are in the right order before adding stuff to seurat
+all.equal(colnames(seurat_obj), gsub('#', '_', rownames(proj@cellColData)))
+
+################################################################################
+# add UMAP to seurat obj
+################################################################################
+
+umap_df <- proj@embeddings$UMAP$df %>% as.matrix
+rownames(umap_df) <- colnames(seurat_obj)
+colnames(umap_df) <- c('UMAP_1', 'UMAP_2')
+
+seurat_obj@reductions$umap <- CreateDimReducObject(
+    embeddings=umap_df,
+    assay="peaks"
+)
+
+################################################################################
+# add Harmonized LSI to seurat obj
+################################################################################
+
+harmony_matrix <- proj@reducedDims$Harmony$matDR
+rownames(harmony_matrix) <- colnames(seurat_obj)
+colnames(harmony_matrix) <- paste0('LSI_', 1:ncol(harmony_matrix))
+
+seurat_obj@reductions$harmony <- CreateDimReducObject(
+    embeddings=harmony_matrix,
+    assay="peaks"
+)
+
+################################################################################
+# add Gene Activity matrix to seurat obj
+################################################################################
+
+gene.activities <- GeneActivity(seurat_obj)
+seurat_obj[['RNA']] <- CreateAssayObject(counts=gene.activities)
+seurat_obj <- NormalizeData(
+  seurat_obj, assay='RNA', normalization.method='LogNormalize',
+  scale.factor = median(seurat_obj$nCount_RNA)
+)
+
+################################################################################
+# ChromVAR motif enrichment analysis
+################################################################################
+
+library(JASPAR2020)
+library(TFBSTools)
+library(BSgenome.Mmusculus.UCSC.mm10)
+
+# Get a list of motif position frequency matrices from the JASPAR database
+pfm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(species = 9606, all_versions = FALSE)
+)
+
+# add motif information
+seurat_obj <- AddMotifs(
+  object = seurat_obj,
+  genome = BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pfm
+)
+
+# run chromvar
+seurat_obj <- RunChromVAR(
+  object = seurat_obj,
+  genome = BSgenome.Mmusculus.UCSC.mm10
+)
+
+saveRDS(seurat_obj, paste0(data_dir, 'signac_in_progress.rds'))
+
+```
+
+Annotate Cell types
+Assign cell type names based on label transfer, markers etc.
+
+```{r eval=FALSE}
+
+cluster_anno <- read.csv(paste0(data_dir, 'snATAC_cluster_assignments.csv'), stringsAsFactors=FALSE)
+index <- match(seurat_atac$Clusters, cluster_anno$Clusters)
+
+seurat_atac$Cell.Type <- cluster_anno$Cell.Type[index]
+seurat_atac$Assigned.Clusters <- cluster_anno$Assigned.Clusters[index]
+seurat_atac$subcluster_name <- cluster_anno$subcluster_name[index]
+
+p1 <- DimPlot(seurat_atac, group.by='Assigned.Clusters', label=TRUE) + umap_theme + NoLegend()
+p2 <- DimPlot(seurat_atac, group.by='Cell.Type', label=TRUE) + umap_theme + NoLegend()
+p3 <- DimPlot(seurat_atac, group.by='subcluster_name', label=TRUE) + umap_theme + NoLegend()
+
+pdf(paste0(fig_dir, 'umap_atac_celltypes.pdf'), width=15, height=5, useDingbats=FALSE)
+p1 + p2 + p3
+dev.off()
+
+# save the processed object 
+saveRDS(seurat_obj, paste0(data_dir, 'snATAC_processed_seurat.rds'))
+
+```

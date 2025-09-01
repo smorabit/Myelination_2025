@@ -1,0 +1,1346 @@
+
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+# library(monocle3)
+library(SeuratWrappers)
+library(cicero)
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC")
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank()
+)
+
+# load snRNA-seq seurat object:
+seurat_rna <- readRDS("/dfs7/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf_seurat.rds")
+
+# load the ATAC
+seurat_atac <- readRDS('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/signac_final_07-02-21.rds')
+DefaultAssay(seurat_atac) <- 'peaks'
+seurat_atac$Time.point <- seurat_atac$Timepoint
+
+f <- Fragments(seurat_atac)[[1]]
+head(f@cells)
+
+# update fragments
+samples <- unique(seurat_atac$Sample)
+frag_list <- list()
+for(i in 1:length(samples)){
+  cur_sample <- samples[[i]]
+  print(cur_sample)
+  cells <- subset(seurat_atac@meta.data, Sample == cur_sample) %>% rownames
+
+  bcs <- do.call(rbind, strsplit(cells, '_'))[, length(strsplit(cur_sample, '_')[[1]]) + 1]
+  names(bcs) <- cells
+
+  frag_list[[i]] <- CreateFragmentObject(
+    path = paste0("/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/cellRanger_Fragments/", cur_sample, "/outs/fragments.tsv.gz"),
+    cells = bcs,
+    validate.fragments=FALSE
+  )
+}
+Fragments(seurat_atac) <- NULL
+Fragments(seurat_atac) <- frag_list
+
+
+DefaultAssay(seurat_obj) <- 'peaks'
+seurat_obj$Time.point <- seurat_obj$Timepoint
+
+# re-load data for current cell type:
+cur_celltype <- 'ODC'
+# cur_celltype <- 'MG'
+# cur_celltype <- 'ASC'
+
+fig_dir <- paste0('figures/', cur_celltype, '/'); dir.create(fig_dir)
+
+# load coembed object
+seurat_subset <- readRDS(paste0(data_dir, cur_celltype, '_coembed_seurat.rds'))
+
+
+# subset full atac-seq seurat object with cells that we have pseudotime info for
+# doing it this way because the integrated object doesn't have a slot to add the
+# cicero links.
+seurat_celltype <- seurat_atac[,rownames(subset(seurat_subset@meta.data, tech == 'atac'))]
+
+
+# for young / old analysis
+
+
+# subset old/young:
+#cur_group <- 'Young'
+cur_group <- 'Old'
+
+subset.cells <- ((seurat_obj$Time.point == 'Naive' & seurat_obj$subcluster_name == 'OPC') |
+(seurat_obj$Time.point == 'Day.5' & seurat_obj$subcluster_name %in% c('OPC', 'NFOL')) |
+(seurat_obj$Time.point == 'Day.14' & seurat_obj$subcluster_name %in% c('MF-ODC', 'Int-ODC')) |
+(seurat_obj$Time.point == 'Day.30' & seurat_obj$subcluster_name == 'Mat-ODC')) &
+(seurat_obj$Group == cur_group)
+table(subset.cells)
+
+# subset the seurat obj
+seurat_celltype <- seurat_obj[,subset.cells]
+dim(seurat_celltype)
+
+
+
+
+
+
+
+
+
+
+library(ArchR)
+
+# ArchR dataset:
+addArchRGenome("mm10")
+addArchRThreads(threads = 8)
+proj <- loadArchRProject(path = "/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/Franklin_ATAC/")
+proj@peakSet$peak <- paste0(
+  as.character(seqnames(proj@peakSet)), '-',
+  as.character(start(proj@peakSet)), '-',
+  as.character(end(proj@peakSet))
+)
+peakset <- data.frame(
+  'peak' = proj@peakSet$peak,
+  'peakType' = proj@peakSet$peakType,
+  'nearestGene' = proj@peakSet$nearestGene
+)
+rownames(peakset) <- peakset$peak
+
+
+
+
+
+
+
+library(EnsDb.Mmusculus.v79)
+library(Gviz)
+library(cicero)
+
+
+# load gene annotation for mm10
+gene.coords <- genes(EnsDb.Mmusculus.v79, filter = ~ gene_biotype == "protein_coding")
+genebody.coords <- keepStandardChromosomes(gene.coords, pruning.mode = 'coarse')
+genebodyandpromoter.coords <- Extend(x = genebody.coords, upstream = 2000, downstream = 0)
+genebodyandpromoter.coords <- genebodyandpromoter.coords %>% subset(seqnames %in% c(1:20,'Y','X'))
+
+# load .gtf
+gtf_file = "/dfs7/swaruplab/smorabit/resources/cellranger-atac_reference/refdata-cellranger-atac-mm10-1.2.0/genes/genes.gtf"
+gene_anno <- rtracklayer::readGFF(gtf_file)
+
+# rename some columns to match requirements
+gene_anno$chromosome <- gene_anno$seqid
+gene_anno$gene <- gene_anno$gene_id
+gene_anno$transcript <- gene_anno$transcript_id
+gene_anno$symbol <- gene_anno$gene_name
+
+grtrack <- GeneRegionTrack(
+  gene.coords, genome = 'mm10', chromosome = 'chr10',
+  name = "Gene Model",
+  transcriptAnnotation = "symbol",
+  background.title = "brown", fill = 'lightgray'
+)
+
+
+
+
+
+```
+
+Identify CCANs using cicero
+
+```{r eval=FALSE}
+
+
+DefaultAssay(seurat_celltype) <- 'peaks'
+atac.cds <- as.cell_data_set(x = seurat_celltype)
+cicero.cds <- make_cicero_cds(atac.cds, reduced_coordinates = reducedDims(atac.cds)$UMAP)
+
+
+#
+# DefaultAssay(seurat_subset) <- 'peaks'
+# seurat_atac <- seurat_subset %>% subset(tech == 'atac')
+# atac.cds <- as.cell_data_set(x = seurat_atac)
+# cicero.cds <- make_cicero_cds(atac.cds, reduced_coordinates = reducedDims(atac.cds)$UMAP)
+
+# load genome sizes
+genome.df <- read.csv("/dfs7/swaruplab/smorabit/resources/hg38.chrom.sizes", sep='\t', header=FALSE)
+colnames(genome.df) <- c('chr', 'length')
+
+# run cicero:
+conns <- cicero::run_cicero(
+  cds = cicero.cds,
+  genomic_coords = genome.df,
+  window = 5e+05,
+  sample_num = 100
+)
+
+# find cis co-accessibility networks
+ccans <- generate_ccans(conns)
+
+# save conns & ccan objects:
+save(conns, ccans, file=paste0(data_dir, cur_celltype, '_', cur_group, '_cicero_connections.rda'))
+
+
+
+
+# get region for one gene
+cur_anno <- Annotation(seurat_celltype) %>% subset(gene_name == cur_gene)
+cur_chr <- unique(as.character(seqnames(cur_anno)))
+cur_start <- min(start(cur_anno))
+cur_end <- max(end(cur_anno))
+cur_region <- paste0(cur_chr, '-', cur_start, '-', cur_end)
+
+p1 <- CoveragePlot(
+  seurat_celltype,
+  group.by='pseudotime_bins_10',
+  region=cur_region,
+  links=FALSE
+)
+
+p2 <- LinkPlot(
+  seurat_celltype,
+  region = cur_region,
+  min.cutoff = 0.1
+)
+
+pdf(paste0(fig_dir, cur_celltype, '_test_cicero_plot.pdf'), width=5, height=10)
+CombineTracks(
+  list(p1,p2),
+  heights=c(10,2)
+)
+dev.off()
+
+# it would be nice to use the pando package to infer TF GRNs https://github.com/quadbiolab/Pando
+# but it won't install on HPC3
+
+
+```
+
+Identify gene-linked candidate cis-regulatory elements (gl-cCREs)
+
+* go to the above block to re-plot the test plot to check that it works
+
+To link genes & cCREs using only co-accessibility:
+* for peak1 and peak2, get the peak annotation from ArchR and add to table
+* for peak1 and peak2, get the nearest gene from ArchR and add to table
+* subset by some small co-accessibility value
+* subset where Peak1 is a promoter & Peak2 is not a promoter
+* these are the gl-cCREs!!!
+* use NMF to group the gl-cCREs into functional modules
+* plot some stats about the gl-cCREs like fig 3 of natgen paper
+
+```{r eval=FALSE}
+
+# re-load cicero tables (conns, ccans):
+load(file=paste0(data_dir, cur_celltype, '_', cur_group, '_cicero_connections.rda'))
+
+# load AD gl-cCRE table as a reference
+# load("/dfs7/swaruplab/smorabit/analysis/AD_NucSeq_2019/atac_analysis/all_data/cicero/update/data/link_df_merged.rda")
+# link_df_young <- link_df
+
+promoter_peaks <- proj@peakSet %>% subset(peakType == 'Promoter') %>% .$peak %>% unique
+
+
+# get all non-zero links:
+link_df <- conns %>% subset(coaccess > 0)
+link_df$Peak1 <- as.character(link_df$Peak1)
+link_df$Peak2 <- as.character(link_df$Peak2)
+
+# nearest gene & peakType for peak1
+# temp <- peakset[link_df$Peak1,]
+temp <- peakset[match(link_df$Peak1, peakset$peak),]
+link_df$Peak1_nearestGene <- temp$nearestGene
+link_df$Peak1_type <- temp$peakType
+all.equal(temp$peak, link_df$Peak1)
+
+
+# nearest gene & peakType for peak2
+temp <- peakset[match(link_df$Peak2, peakset$peak),]
+link_df$Peak2_nearestGene <- temp$nearestGene
+link_df$Peak2_type <- temp$peakType
+all.equal(temp$peak, link_df$Peak2)
+
+
+# just get entries where Peak1 is a promoter
+link_df <- link_df %>% subset(
+  Peak1_type == 'Promoter' &
+  Peak2_type != 'Promoter'
+)
+
+# distance between peak and target gene
+peak1_ranges <- Signac::StringToGRanges(link_df$Peak1, sep=c(':', '-'))
+peak2_ranges <- Signac::StringToGRanges(link_df$Peak2, sep=c(':', '-'))
+link_df$distance_bp <- abs(start(peak1_ranges) - start(peak2_ranges))
+peak1_ranges$Peak <- link_df$Peak1
+peak2_ranges$Peak <- link_df$Peak2
+
+# threshold for co-accessibility
+link_df_full <- link_df
+
+coaccess_thresh <- quantile(link_df_full$coaccess, 0.8)
+coaccess_thresh
+
+dim(link_df_full[link_df$coaccess >= coaccess_thresh,])
+
+link_df <- link_df_full[link_df$coaccess >= coaccess_thresh,]
+
+# save results
+write.csv(link_df, file=paste0(data_dir, cur_celltype, '_', cur_group, '_gl-cCREs.csv'), row.names=FALSE)
+write.csv(link_df_full, file=paste0(data_dir, cur_celltype, '_', cur_group ,'_full_link_table.csv'))
+
+
+```
+
+## calculate trajectory DARS (t-DARs) using monocle3:
+
+Before this section, need to load the processed celldataset and seurat object for
+a certain cell type
+
+```{r eval=FALSE}
+
+cur_celltype <- 'ODC'
+fig_dir <- paste0(fig_dir, cur_celltype, '/')
+
+# load gl-cCREs:
+link_df <- read.csv(file=paste0(data_dir, cur_celltype, '_', cur_group, '_gl-cCREs.csv'))
+
+# load seurat obj (in blocks above)
+
+# run LSI on snATAC peaks:
+seurat_celltype <- RunTFIDF(seurat_celltype, assay='peaks')
+
+
+# get gl-cCREs and any promoters:
+promoter_peaks <- peakset %>% subset(peakType == 'Promoter') %>% .$peak %>% unique
+glccre_peaks <- link_df$Peak2 %>% unique %>% as.character
+length(intersect(promoter_peaks, glccre_peaks))
+peaks_to_use <- unlist(c(promoter_peaks, glccre_peaks))
+
+#acc_matrix <- acc_matrix[peaks_to_use,]
+
+# make sure no peaks are all 0 !!!
+#peaks_to_use <- rownames(acc_matrix)[rowSums(acc_matrix)!=0]
+#acc_matrix <- acc_matrix[peaks_to_use,]
+
+# cds for full dataset
+# cds_subset <- new_cell_data_set(
+#   acc_matrix,
+#   cell_metadata = seurat_celltype@meta.data
+# )
+
+################################################################
+# cds for averaged acessibility
+################################################################
+
+avg_acc <- AverageExpression(
+  seurat_celltype,
+  group.by=c('pseudotime_bins_100'),
+  slot='data',
+  assays='peaks'
+)
+avg_acc <- avg_acc$peaks
+avg_acc <- avg_acc[peaks_to_use,]
+
+df <- data.frame(
+  pseudotime = as.numeric(sub(' ', '', sub('\\[', '', do.call(rbind, strsplit(colnames(avg_acc), ','))[,1]))),
+  n_cells_per_bin = as.numeric(table(seurat_celltype$pseudotime_bins_50)
+))
+colnames(avg_acc) <- 1:ncol(avg_acc)
+rownames(df) <- colnames(avg_acc)
+cds_subset <- new_cell_data_set(
+  avg_acc,
+  cell_meta = df
+)
+
+head(pData(cds_subset))
+
+
+# identify t-DEGs
+acc_fits <- monocle3::fit_models(
+  cds_subset,
+  model_formula_str = "~pseudotime"
+  #expression_family = 'binomial', # this doesn't work!!!
+)
+
+fit_coefs <- coefficient_table(acc_fits)
+head(fit_coefs)
+
+t_dars <- fit_coefs %>% filter(term == "pseudotime" & q_value <= 0.05) %>%
+      select(gene_id, term, q_value, estimate)
+
+
+
+# write t-degs table as a csv:
+write.csv(t_dars, file=paste0(data_dir, cur_celltype, '_tDARs.csv'), quote=FALSE, row.names=FALSE)
+
+
+# how many t_dars are gl-cCREs and how many are promoters?
+t_dars$gene_id %in% promoter_peaks %>% table
+
+
+```
+
+Donut chart showing the proportion of t_dars of each type:
+
+```{r eval=FALSE}
+
+# re-load t-DARs for this celltype:
+t_dars <- read.csv(paste0(data_dir, cur_celltype, '_tDARs.csv'))
+
+temp <- data.frame(
+  'peak' = as.character(proj@peakSet$peak),
+  'type' = proj@peakSet$peakType
+)
+rownames(temp) <- temp$peak
+
+t_dars$peakType <- temp[as.character(t_dars$gene_id), 'type']
+
+
+
+data <- as.data.frame(table(t_dars$peakType))
+colnames(data) <- c('category', 'count')
+
+table(t_dars$peakType) / nrow(t_dars) * 100
+
+# Compute percentages
+data$fraction <- data$count / sum(data$count)
+
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$fraction)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Compute a good label
+data$label <- paste0(data$category, "\n ", data$count, ' peaks')
+
+
+# Make the plot
+pdf(paste0(fig_dir, '/donut_plot_t-DARs.pdf'), width=5, height=4)
+ggplot(data, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=category)) +
+  geom_rect() +
+  #geom_text( x=2, aes(y=labelPosition, label=label, color=category), size=6) + # x here controls label position (inner / outer)
+  scale_fill_brewer(palette="Dark2") +
+  scale_color_brewer(palette="Dark2") +
+  coord_polar(theta="y") +
+  xlim(c(0, 4)) +
+  theme_void()
+dev.off()
+
+```
+
+
+Save pseudo-bulk aggregates in pseudotime bin for VAE modeing
+
+```{r eval=FALSE}
+
+library(scales)
+
+# re-load t-DEGs for this celltype:
+t_dars <- read.csv(paste0(data_dir, cur_celltype, '_tDARs.csv'))
+pseudotime_genes <- t_dars$gene_id
+
+# setup RVAE directory
+outdir = '/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/RVAgene/RVAgene/data/'
+cur_name <- paste0(cur_celltype, '_RVAE_tDARs')
+dir.create(paste0(outdir, cur_name))
+
+# average expression / pseudo-expression in pseudotime bins:
+Idents(seurat_celltype) <- seurat_celltype$pseudotime_bins_100
+avg_acc <- AverageExpression(seurat_celltype, slot='data', assay='peaks', features=pseudotime_genes)
+avg_acc <- avg_acc$peaks
+
+# rescale each gene between -1 and 1:
+scaled_acc <- sapply(1:nrow(avg_acc), function(i) scales::rescale(as.numeric(avg_acc[i,]), to=c(-1,1))) %>% t %>% as.data.frame
+rownames(scaled_acc) <- rownames(avg_acc)
+avg_acc <- scaled_acc
+
+# pad with zeros as required by RVAgene:
+avg_acc <- cbind(rep(0, nrow(avg_acc)), avg_acc)
+
+# write to output file
+write.table(avg_acc, file=paste0(outdir, cur_name, '/', cur_name, '_TRAIN'), sep=',',quote=FALSE, row.names=FALSE, col.names=FALSE)
+write.table(avg_acc, file=paste0(outdir, cur_name, '/', cur_name, '_TEST'), sep=',',quote=FALSE, row.names=FALSE, col.names=FALSE)
+write.table(as.data.frame(rownames(avg_acc)), file=paste0(outdir, cur_name, '/feature_names.csv' ), sep=',',quote=FALSE, row.names=FALSE, col.names=FALSE)
+
+
+```
+
+Get a list of TFs
+
+```{r eval=FALSE}
+
+################################################################################
+# get a list of TFs
+################################################################################
+
+# get list of TFs from atac data
+DefaultAssay(seurat_atac) <- 'peaks'
+chromvar_motifs <- Motifs(seurat_atac)@motif.names %>%
+  unlist %>% as.character
+print(length(chromvar_motifs))
+
+# set up motif df
+motif_df <- data.frame(
+  motif_id = names(Motifs(seurat_atac)@motif.names),
+  motif_name_orig = as.character(Motifs(seurat_atac)@motif.names)
+)
+
+# 1. split apart cases where two genes are one motif delimited by ::
+# 2. remove "()" characters and anything within them
+
+tmp <- motif_df$motif_name[grepl("::", motif_df$motif_name)]
+tmp_ids <- names(Motifs(seurat_atac)@motif.names[chromvar_motifs %in% tmp])
+
+motif_df$motif_name <- gsub("\\s*\\([^\\)]+\\)","", motif_df$motif_name_orig)
+tmp <- motif_df$motif_name[grepl("::", motif_df$motif_name)]
+motif_df <- subset(motif_df, !(motif_name %in% tmp))
+
+tmp2 <- strsplit(tmp, '::')
+names(tmp2) <- tmp
+tmp <- do.call(rbind, lapply(1:length(tmp2), function(i){
+  data.frame(motif_id = tmp_ids[i], motif_name_orig = names(tmp2)[i], motif_name = unlist(as.character(tmp2[[i]])))
+}))
+motif_df <- rbind(motif_df, tmp)
+
+# convert gene names to mouse style by matching genes in ensembl
+# motif_df$motif_name <- str_to_title(motif_df$motif_name) # old
+
+# load mouse <-> human gene name table:
+hg38_mm10_genes <- read.table(
+  "/dfs7/swaruplab/smorabit/resources/hg38_mm10_orthologs_2021.txt",
+  sep='\t',
+  header=TRUE
+)
+colnames(hg38_mm10_genes) <-c('hg38_id', 'mm10_id', 'mm10_name', 'hg38_name')
+hg38_mm10_genes <- dplyr::select(hg38_mm10_genes, c(hg38_name, mm10_name, hg38_id, mm10_id))
+
+ix <- match(motif_df$motif_name, hg38_mm10_genes$hg38_name)
+motif_df$motif_name_mouse <- hg38_mm10_genes$mm10_name[ix]
+
+
+chromvar_motifs <- unique(motif_df$motif_name_mouse)
+
+# which do we also have RNA data for?
+tfs <- chromvar_motifs[chromvar_motifs %in% rownames(seurat_rna)]
+
+
+
+```
+
+Correlation of enhancer-gene co-accessibility in Young & Old mice:
+
+```{r eval=FALSE}
+
+link_df_young <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/ODC_Young_full_link_table.csv')) %>% 
+  subset(Peak2_type != 'Exonic')
+link_df_old <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/ODC_Old_full_link_table.csv'))  %>% 
+  subset(Peak2_type != 'Exonic')
+
+# add column for the two peaks
+link_df_young$link <- paste0(link_df_young$Peak1, '_', link_df_young$Peak2)
+link_df_old$link <- paste0(link_df_old$Peak1, '_', link_df_old$Peak2)
+
+# add missing links to each
+missing_ad <- link_df_old$link[!(link_df_old$link %in% link_df_young$link)]
+missing_pid <- link_df_young$link[!(link_df_young$link %in% link_df_old$link)]
+link_df_young[missing_ad,] <- NA
+link_df_young[missing_ad,'link'] <- missing_ad
+link_df_young[missing_ad,'coaccess'] <- 0
+link_df_old[missing_pid,] <- NA
+link_df_old[missing_pid,'link'] <- missing_pid
+link_df_old[missing_pid,'coaccess'] <- 0
+
+# set rownames
+rownames(link_df_old) <- link_df_old$link
+rownames(link_df_young) <- link_df_young$link
+
+# re-order so they match
+link_df_old <- link_df_old[link_df_young$link,]
+all.equal(link_df_old$link, link_df_young$link)
+
+plot_df <- data.frame(
+  link = link_df_young$link,
+  coaccess_young = link_df_young$coaccess,
+  coaccess_old = link_df_old$coaccess
+)
+plot_df$Peak1 <- ifelse(is.na(link_df_old$Peak1), link_df_young$Peak1, link_df_old$Peak1)
+plot_df$Peak1_nearestGene <- ifelse(is.na(link_df_old$Peak1_nearestGene), link_df_young$Peak1_nearestGene, link_df_old$Peak1_nearestGene)
+
+plot_df$Peak2 <- ifelse(is.na(link_df_old$Peak2), link_df_young$Peak2, link_df_old$Peak2)
+plot_df$Peak2_type <- ifelse(is.na(link_df_old$Peak2_type), link_df_young$Peak2_type, link_df_old$Peak2_type)
+
+
+library(ggpubr)
+
+p <- plot_df %>%
+  ggplot(aes(x = coaccess_young, y = coaccess_old)) +
+  geom_hex(bins = 50) +
+  geom_abline(intercept=0, slope=1, linetype='dashed', color='black') +
+  scale_fill_gradientn(colors=rev(plasma(256)), trans="log") +
+  stat_cor(method='pearson') +
+  theme(
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.border = element_rect(colour = "black", fill=NA, size=1),
+    plot.title = element_text(hjust=0.5, face='bold')
+  ) +
+  xlab('Young coaccessibility') +
+  ylab('Old coaccessibility') +
+  coord_fixed() +
+  scale_x_continuous(limits=c(0,1), breaks=c(0,0.5,1)) +
+  scale_y_continuous(limits=c(0,1), breaks=c(0,0.5,1))
+  #guides(fill=guide_colorbar(ticks.colour = NA, ticks=NA, label=FALSE))
+
+
+pdf(paste0(fig_dir, 'coaccess_ODC_young_vs_old.pdf'), width=6,height=4)
+print(p)
+dev.off()
+
+
+################################################################################
+# Identify "important" genes that have disrupted links
+################################################################################
+
+# load celltype DEGs:
+deg_file <- "/dfs7/swaruplab/smorabit/collab/AMRF/analysis/DEGs/data/cluster_markers.csv"
+degs <- read.csv(deg_file, stringsAsFactors=FALSE) %>%
+  subset(p_val_adj < 0.05 & avg_log2FC >= 0.5)
+degs <- subset(degs, group %in% c('NFOL', 'OPC', 'Int-ODC', 'Mat-ODC', 'MF-ODC'))
+degs$group <- factor(
+  degs$group,
+  levels= unique(degs$group)
+)
+
+# make a table that has the old & young co-access scores
+link_df <- plot_df
+link_df$chr <- do.call(rbind, strsplit(link_df$Peak1, '-'))[,1]
+
+# compute Old - Young delta:
+link_df$delta <- link_df$coaccess_old - link_df$coaccess_young
+
+# distance between peak and target gene
+peak1_ranges <- Signac::StringToGRanges(link_df$Peak1, sep=c('-', '-'))
+peak2_ranges <- Signac::StringToGRanges(link_df$Peak2, sep=c('-', '-'))
+peak1_ranges$Peak <- link_df$Peak1
+peak2_ranges$Peak <- link_df$Peak2
+
+# plot the distribution of delta scores:
+p <- link_df %>%
+  ggplot(aes(x=delta)) +
+  geom_density()
+
+pdf(paste0(fig_dir, 'coaccess_ODC_young_vs_old_delta.pdf'), width=6,height=4)
+print(p)
+dev.off()
+
+
+# get top / bottom 1000 links
+thresh <- quantile(link_df$delta, 0.995)
+# top_links_old <- link_df %>% slice_max(order_by=delta, n=1000)
+top_links_old <- link_df %>% subset(delta >= thresh)
+old_genes <- top_links_old %>% .$Peak1_nearestGene %>% unique
+
+# loss of function in aging (includes Klk6 and )
+thresh <- quantile(link_df$delta, 0.005)
+# top_links_young <- link_df %>% slice_min(order_by=delta, n=1000)
+top_links_young <- link_df %>% subset(delta <= thresh)
+young_genes <- top_links_young %>% .$Peak1_nearestGene %>% unique
+
+
+length(intersect(old_genes, young_genes))
+
+# intersect genes with ODC cluster DEGs
+intersect(old_genes, unique(degs$gene))
+intersect(young_genes, unique(degs$gene))
+
+# intersect genes with TFs
+intersect(old_genes, tfs)
+intersect(young_genes, tfs)
+
+################################################################################
+# co-accessibility and coverage plots for 1-2 examples
+################################################################################
+
+load(file=paste0(data_dir, 'ODC_Young_cicero_connections.rda'))
+
+cur_gene <- 'Plp1'
+
+top_links_old %>% subset(Peak1_nearestGene == cur_gene)
+top_links_young %>% subset(Peak1_nearestGene == cur_gene)
+
+# get links to the gene of interest:
+plot_conns <- subset(link_df, Peak1_nearestGene == cur_gene) %>%
+  dplyr::select(c(Peak1, Peak2, delta)) %>%
+  dplyr::rename(c(coaccess=delta))
+
+# specify if it's higher in young or old
+plot_conns$direction <- sign(plot_conns$coaccess)
+plot_conns$direction <- ifelse(plot_conns$direction == -1, 'Young', 'Old')
+plot_conns$coaccess <- abs(plot_conns$coaccess)
+
+# number of basepairs to add to either side of the plotting region
+buffer_bp <- 500
+
+# get the plotting region based on selected links
+cur_peak1 <- subset(peak1_ranges, Peak %in% plot_conns$Peak1)
+cur_peak2 <- subset(peak2_ranges, Peak %in% plot_conns$Peak2)
+cur_peaks <- c(cur_peak1, cur_peak2)
+cur_start <- min(start(cur_peaks)) - buffer_bp
+cur_end <- max(end(cur_peaks)) + buffer_bp
+cur_chr <- as.character(unique(seqnames(cur_peaks)))
+plot_region <- paste0(cur_chr, '-', cur_start, '-', cur_end)
+
+######################################################
+# Modifying the signac link plot
+######################################################
+
+# convert conns to links:
+plot_links_old <- Signac::ConnectionsToLinks(
+  conns=subset(plot_conns, direction=='Old')
+)
+
+plot_links_young <- Signac::ConnectionsToLinks(
+  conns=subset(plot_conns, direction=='Young')
+)
+
+
+
+
+
+p1 <- CoveragePlot(
+  object = seurat_celltype,
+  group.by='Group',
+  region = plot_region,
+  annotation = FALSE, peaks = FALSE, tile = FALSE, links = FALSE
+)
+p1 <- p1 + scale_fill_manual(values=c('darkorchid3', 'seagreen')) +
+  theme(plot.margin=margin(0,0,0,0))
+
+p2 <- AnnotationPlot(seurat_celltype, region=plot_region) +
+  theme(plot.margin=margin(0,0,0,0))
+
+
+
+
+
+ymax <- max(plot_conns$coaccess) *2
+ymax
+
+
+
+p_old <- CustomLinkPlot(
+  seurat_celltype,
+  region = plot_region,
+  links = plot_links_old,
+  negative = FALSE,
+  ymax = NULL,
+  color_low = 'darkorchid3', color_mid = 'darkorchid3', color_high = 'darkorchid3'
+  #color_low = 'seagreen', color_mid = 'lightgrey', color_high = 'darkorchid3'
+) + NoLegend() + ylab('Old links') +
+  theme(plot.margin=margin(0,0,0,0))
+
+p_young <- CustomLinkPlot(
+  seurat_celltype,
+  region = plot_region,
+  links = plot_links_young,
+  negative = TRUE,
+  ymax = NULL,
+  color_low = 'seagreen', color_mid = 'seagreen', color_high = 'seagreen'
+  #color_low = 'seagreen', color_mid = 'lightgrey', color_high = 'darkorchid3'
+) + NoLegend() + ylab('Young links') +
+  theme(plot.margin=margin(0,0,0,0))
+
+
+
+
+p3 <- CombineTracks(
+  plotlist=list(p_old, p1,p_young,p2),
+  heights=c(2,4,2,2)
+)
+
+# plot cicero connections only, no peaks!
+pdf(paste0(fig_dir,"test_cov.pdf"), width=6, height=6)
+p3
+dev.off()
+
+
+######################################################
+# Modified LinkPlot code
+######################################################
+
+CustomLinkPlot <- function(
+  object,
+  region,
+  links = NULL,
+  assay = NULL,
+  min.cutoff = 0,
+  sep = c("-", "-"),
+  extend.upstream = 0,
+  extend.downstream = 0,
+  negative=TRUE,
+  ymax = NULL,
+  color_high = 'blue',
+  color_mid = 'grey',
+  color_low = 'red'
+) {
+  region <- Signac:::FindRegion(
+    object = object,
+    region = region,
+    sep = sep,
+    assay = assay,
+    extend.upstream = extend.upstream,
+    extend.downstream = extend.downstream
+  )
+  chromosome <- seqnames(x = region)
+
+  # extract link information
+  if(is.null(links)){
+    links <- Links(object = object)
+  }
+
+  # if links not set, return NULL
+  if (length(x = links) == 0) {
+    return(NULL)
+  }
+
+  # subset to those in region
+  links.keep <- subsetByOverlaps(x = links, ranges = region)
+
+  # filter out links below threshold
+  link.df <- as.data.frame(x = links.keep)
+  link.df <- link.df[abs(x = link.df$score) > min.cutoff, ]
+
+  # remove links outside region
+  link.df <- link.df[link.df$start >= start(x = region) & link.df$end <= end(x = region), ]
+
+  # plot
+  if (nrow(x = link.df) > 0) {
+    if (!requireNamespace(package = "ggforce", quietly = TRUE)) {
+      warning("Please install ggforce to enable LinkPlot plotting: ",
+              "install.packages('ggforce')")
+      p <- ggplot(data = link.df)
+    } else {
+      # convert to format for geom_bezier
+      link.df$group <- seq_len(length.out = nrow(x = link.df))
+
+      if(negative){
+        link.df$score <- link.df$score * -1
+      }
+
+      df <- data.frame(
+        x = c(link.df$start,
+              (link.df$start + link.df$end) / 2,
+              link.df$end),
+        y = c(rep(x = 0, nrow(x = link.df)),
+              #rep(x = -1, nrow(x = link.df)),
+              2*link.df$score,
+              rep(x = 0, nrow(x = link.df))),
+        type = rep('cubic', nrow(link.df)),
+        group = rep(x = link.df$group, 3),
+        score = rep(link.df$score, 3)
+      )
+
+      df$alp <- abs(df$score)
+
+
+      # sort by the score
+      # if(negative){
+      # #  df <- df %>% arrange(desc(score))
+      #   df <- df %>% arrange(score)
+      # } else{
+      #   df <- df %>% arrange(score)
+      # }
+      if(!negative){
+        df$group <- factor(df$group, levels=unique(df$group[order(df$score)]))
+      }else{
+        df$group <- factor(df$group, levels=unique(df$group[rev(order(df$score))]))
+      }
+
+      min.color <- min(0, min(df$score))
+      print(range(df$score))
+      print(min.color)
+      p <- ggplot(data = df) +
+        ggforce::geom_bezier(
+          mapping = aes_string(
+            x = "x", y = "y",
+            group = "group",
+            color = "score", alpha="alp",
+            linetype = 'type'
+          )
+        ) +
+        geom_hline(yintercept = 0, color = 'grey') +
+        scale_color_gradient2(low = color_low, mid = color_mid, high = color_high,
+                              #limits = c(min.color, ymax),
+                              n.breaks = 3)
+
+    }
+  } else {
+    p <- ggplot(data = link.df)
+  }
+  p <- p +
+    theme_classic() +
+    # theme(axis.ticks.y = element_blank(),
+    #       axis.text.y = element_blank()) +
+    ylab("Links") +
+    xlab(label = paste0(chromosome, " position (bp)")) +
+    xlim(c(start(x = region), end(x = region))) 
+    
+    if(!is.null(ymax)){
+      p <- p + ylim(0, ymax)
+
+    }
+  return(p)
+}
+
+
+  # if(pmax_y > pmax_o){
+
+  #   p_young <- CustomLinkPlot(
+  #   seurat_celltype,
+  #   region = plot_region,
+  #   links = plot_links_young,
+  #   negative = FALSE,
+  #   min.cutoff = 0.05,
+  #   color_low = 'seagreen', color_mid = 'seagreen', color_high = 'seagreen'
+  # ) + NoLegend() + ylab('Young links') +
+  #   theme(plot.margin=margin(0,0,0,0))
+
+  #   g <- ggplot_build(p_young)
+
+  #   p_old <- CustomLinkPlot(
+  #     seurat_celltype,
+  #     region = plot_region,
+  #     links = plot_links_old,
+  #     negative = FALSE,
+  #     min.cutoff = 0.05,
+  #     ymax = max(g$layout$panel_params[[1]]$y.range),
+  #     color_low = 'darkorchid3', color_mid = 'darkorchid3', color_high = 'darkorchid3'
+  #     #color_low = 'seagreen', color_mid = 'lightgrey', color_high = 'darkorchid3'
+  #   ) + NoLegend() + ylab('Old links') +
+  #     theme(plot.margin=margin(0,0,0,0))
+
+  # } else{
+    
+  #   p_old <- CustomLinkPlot(
+  #     seurat_celltype,
+  #     region = plot_region,
+  #     links = plot_links_old,
+  #     negative = FALSE,
+  #     min.cutoff = 0.05,
+  #     ymax = NULL,
+  #     color_low = 'darkorchid3', color_mid = 'darkorchid3', color_high = 'darkorchid3'
+  #     #color_low = 'seagreen', color_mid = 'lightgrey', color_high = 'darkorchid3'
+  #   ) + NoLegend() + ylab('Old links') +
+  #     theme(plot.margin=margin(0,0,0,0))
+
+  #   g <- ggplot_build(p_old)
+
+  #   p_young <- CustomLinkPlot(
+  #     seurat_celltype,
+  #     region = plot_region,
+  #     links = plot_links_young,
+  #     negative = FALSE,
+  #     min.cutoff = 0.05,
+  #     ymax = max(g$layout$panel_params[[1]]$y.range) ,
+  #     color_low = 'seagreen', color_mid = 'seagreen', color_high = 'seagreen'
+  #   ) + NoLegend() + ylab('Young links') +
+  #     theme(plot.margin=margin(0,0,0,0))
+
+  # }
+
+      
+
+# plot cicero connections only, no peaks!
+pdf(paste0(fig_dir,"test_custom_links.pdf"), width=6, height=3)
+p
+dev.off()
+
+
+```
+
+
+
+
+
+
+
+
+
+Cicero plotting code (OLD)
+
+```{r eval=FALSE}
+
+
+# get coords for the gene itself
+# cur_pos <- subset(genebodyandpromoter.coords, symbol == cur_gene)
+# cur_start <- start(cur_pos)
+# cur_end <- end(cur_pos)
+# chr <- as.character(seqnames(cur_pos))
+# cur_chr <- paste0('chr', chr)
+# plot_region <- paste0('chr', chr, '-', min(start(cur_pos))-500000, '-',max(end(cur_pos))+500000)
+
+
+
+#
+# grtrack <- GeneRegionTrack(
+#   genebody.coords,
+#   genome = 'mm10', chromosome = cur_chr,
+#   name = "Gene Model",
+#   transcriptAnnotation = "symbol",
+#   background.title = "brown", fill = 'lightgray'
+# )
+
+
+
+# y axis limit
+coaccess_ymax <- max(plot_conns$coaccess) + 0.025
+
+# plot Old connections:
+p <- cicero::plot_connections(
+  subset(plot_conns, direction == 'Old'),
+  cur_chr, cur_start, cur_end,
+  gene_model = gene_anno,
+  alpha_by_coaccess = TRUE,
+  connection_color = 'darkorchid3',
+  #coaccess_cutoff = NA,
+  connection_width = 0.5,
+  collapseTranscripts = 'longest',
+  connection_ymax = coaccess_ymax,
+  #viewpoint = gsub('-', '_', plot_region),
+  return_as_list = TRUE
+)
+
+# plot Young connections:
+p2 <- cicero::plot_connections(
+  subset(plot_conns, direction == 'Young'),
+  cur_chr, cur_start, cur_end,
+  gene_model = gene_anno,
+  alpha_by_coaccess = TRUE,
+  connection_color = 'seagreen',
+  # coaccess_cutoff = 0,
+  connection_width = 0.5,
+  collapseTranscripts = 'longest',
+  connection_ymax = coaccess_ymax,
+  #viewpoint = gsub('-', '_', plot_region),
+  return_as_list = TRUE
+)
+
+
+# plot cicero connections only, no peaks!
+pdf(paste0(fig_dir,"test_coaccess.pdf"), width=6, height=3)
+print(Gviz::plotTracks(
+   #trackList=list(p@trackList[[1]], p@trackList[[1]], grtrack, p@trackList[[3]]),
+   trackList=list(p[[1]], p2[[1]], p2[[3]]),
+   sizes = c(3,3,2),
+   from = cur_start, to = cur_end, chromosome = cur_chr,
+   transcriptAnnotation = "symbol",
+   col.axis = "black",
+   fontsize.group = 6,
+   fontcolor.legend = "black",
+   gene_model = gene_anno,
+   lwd=.3,
+   title.width = .5,
+   background.title = "transparent",
+   col.border.title = "transparent"
+))
+dev.off()
+
+
+p1 <- CoveragePlot(
+  object = seurat_celltype,
+  group.by='Group',
+  region = plot_region,
+  annotation = FALSE, peaks = FALSE, tile = FALSE, links = FALSE
+)
+p1 <- p1 + scale_fill_manual(values=c('darkorchid3', 'seagreen'))
+
+p2 <- AnnotationPlot(seurat_celltype, region=plot_region)
+
+p <- CombineTracks(
+  plotlist=list(p1,p2),
+  heights=c(7,3)
+)
+
+# plot cicero connections only, no peaks!
+pdf(paste0(fig_dir,"test_cov.pdf"), width=6, height=3)
+p
+dev.off()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+NMF Stuff doesn't look that good for just one cell type so I will probleave it out
+
+run NMF to group gl-cCREs into modules
+
+```{r eval=FALSE}
+
+library(NMF)
+library(doParallel)
+registerDoParallel(cores=8)
+
+# run LSI on snATAC peaks:
+# seurat_celltype <- RunTFIDF(seurat_celltype, assay='peaks')
+
+# re-load gl-cCRE table:
+link_df <- read.csv(file=paste0(data_dir, cur_celltype, '_gl-cCREs.csv'))
+
+
+################################################################################
+# prep data for NMF
+################################################################################
+
+# get peaks to use for clustering:
+nmf_peaks <- unique(link_df$Peak2)
+
+# construct pseudo-bulk accessibility matrix of gl-cCREs:
+DefaultAssay(seurat_celltype) <- 'peaks'
+
+# add metadata col for group + timepoint
+seurat_celltype$Group.Time <- paste0(
+  as.character(seurat_celltype$Group), '_',
+  as.character(seurat_celltype$Timepoint)
+)
+
+# compute the average accessibility
+avg_access <- AverageExpression(
+  seurat_celltype,
+  group.by=c('pseudotime_bins_10', 'Group.Time'),
+  slot='data',
+  assays='peaks'
+)
+
+avg_access <- avg_access$peaks[nmf_peaks,]
+
+
+################################################################################
+# run NMF
+################################################################################
+
+k = 20
+n_out <- nmf(
+  avg_access,
+  k
+)
+
+# save NMF results:
+saveRDS(n_out, file=paste0(data_dir, cur_celltype, '_gl-cCREs_NMF.rds'))
+
+# re-load NMF results:
+n_out <- readRDS(file=paste0(data_dir, cur_celltype, '_gl-cCREs_NMF.rds'))
+
+# get basis matrix of peaks by factors
+w <- basis(n_out)
+dim(w)
+
+# get coefficient matrix
+h <- coef(n_out)
+rownames(h) <- 1:nrow(h)
+h <- h[,order(colnames(h))]
+
+
+# assigning each peak to a module
+modules <- as.data.frame(apply(w, 1, function(x){which(x == max(x))}))
+names(modules) <- c('module')
+link_df$NMF_module <- modules$module[match(sub(':', '-', link_df$Peak2), rownames(modules))]
+
+table(modules$module[match(nmf_peaks, rownames(modules))])
+
+# save results:
+write.csv(link_df, file=paste0(data_dir, cur_celltype, '_gl-cCREs_NMF.csv'), row.names=FALSE)
+
+
+
+```
+
+Plot NMF matrix:
+
+```{r eval=FALSE}
+
+library(ComplexHeatmap)
+
+
+# get list of top modules in each cluster
+top_modules <- apply(h, 2, function(x){which(x == max(x))})
+top_modules_df <- data.frame(
+  module=top_modules,
+  group=names(top_modules),
+  pseudotime_bin=do.call(rbind, strsplit(names(top_modules), '_'))[,1],
+  Age=do.call(rbind, strsplit(names(top_modules), '_'))[,2],
+  Timepoint=do.call(rbind, strsplit(names(top_modules), '_'))[,3]
+)
+
+# reorder coefficient matrix based on clusters:
+h_new <- h[as.character(unique(top_modules_df$module)),]
+h <- rbind(h_new, h[!(rownames(h) %in% rownames(h_new)),])
+# plot coefficient matrix to see which modules are specific to each cluster
+
+row_ha <- rowAnnotation(
+  module = as.character(rownames(h))
+)
+
+pseudotime_bin_colors <- plasma(10)
+names(pseudotime_bin_colors) <- unique(top_modules_df$pseudotime_bin)
+
+age_colors <- c('orange', 'purple')
+names(age_colors) <- c('Old', 'Young')
+
+time_colors <- viridis(4)
+names(time_colors) <- c('Naive', 'Day.5', 'Day.14', 'Day.30')
+time_colors <- rev(time_colors)
+
+column_ha <- HeatmapAnnotation(
+  group = top_modules_df$pseudotime_bin,
+  age = top_modules_df$Age,
+  timepoint = top_modules_df$Timepoint,
+  col = list(
+    group = pseudotime_bin_colors,
+    age = age_colors,
+    timepoint = time_colors
+  )
+)
+
+
+
+pdf(paste0(fig_dir, 'test_nmf_coefficient.pdf'), width=6, height=8)
+ComplexHeatmap::Heatmap(
+  h,
+  col = brewer.pal(9, 'Greens'),
+  cluster_rows=FALSE,
+  cluster_columns=FALSE,
+  top_annotation = column_ha,
+  left_annotation = row_ha,
+  show_column_names=FALSE,
+  use_raster = TRUE
+
+)
+dev.off()
+
+```
+
+
+plot accessibility matrix
+
+```{r eval=FALSE}
+
+# order peaks by NMF module and plot:
+link_df$NMF_module <- factor(link_df$NMF_module, levels=unique(top_modules))
+links_sorted <- link_df %>%
+  arrange(NMF_module) %>%
+  subset(!is.na(NMF_module))
+
+# get accessibility matrix
+accessibility_matrix <- avg_access[as.character(links_sorted$Peak2),]
+
+# convert to Z score
+zScore <- function(x){(x - mean(x)) /sd(x)}
+matrix_z <- apply(accessibility_matrix, 1, zScore) %>% t()
+matrix_z <- matrix_z[,order(colnames(matrix_z))]
+
+range(matrix_z)
+matrix_z <- ifelse(matrix_z >= 4, 4, matrix_z)
+matrix_z <- ifelse(matrix_z <= -2, -2, matrix_z)
+
+# setup color schemes
+# celltype_colors <- unlist(color_scheme_snATAC_celltype[1:7])
+# cluster_colors <- color_scheme_snATAC_clusters_flat[1:length(color_scheme_snATAC_clusters_flat)-1]
+# names(celltype_colors)[7] <- 'PER'
+
+column_ha <- HeatmapAnnotation(
+  group = top_modules_df$pseudotime_bin,
+  age = top_modules_df$Age,
+  timepoint = top_modules_df$Timepoint,
+  col = list(
+    group = pseudotime_bin_colors,
+    age = age_colors,
+    timepoint = time_colors
+  )
+)
+
+
+row_ha <- rowAnnotation(
+  module = as.character(links_sorted$NMF_module)
+)
+#
+# rownames(matrix_z) <- NULL
+# colnames(matrix_z) <- NULL
+#colfunc.atac <-  colorRampPalette(rev(brewer.pal(11, 'PRGn' )))
+
+
+
+colfunc.atac = colorRamp2(c(-2, 0, 4), c(brewer.pal(11, 'PRGn' )[10], "white", brewer.pal(11, 'PRGn' )[2]))
+
+
+# ncolors=11
+# max = 6; min=-2; color_range = max-min; color_increment= color_range/(ncolors-1);
+# color_values <- sapply(1:ncolors-1, function(i){min + (i*color_increment)})
+# color_values
+# colfunc.atac = colorRamp2(color_values, rev(brewer.pal(ncolors, 'PRGn')))
+
+pdf(paste0(fig_dir, 'test_nmf_accessibility.pdf'), width=12, height=12)
+ComplexHeatmap::Heatmap(
+  matrix_z,
+  col = colfunc.atac,
+  cluster_rows=FALSE,
+  cluster_columns=FALSE,
+  top_annotation = column_ha,
+  left_annotation = row_ha,
+  show_row_names=FALSE, show_column_names=FALSE,
+  use_raster = TRUE
+)
+dev.off()
+
+
+```

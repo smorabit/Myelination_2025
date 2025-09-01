@@ -1,0 +1,182 @@
+```{r eval=FALSE}
+
+# conda activate miloR
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+library(miloR)
+library(patchwork)
+theme_set(theme_cowplot())
+
+setwd("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/ATAC")
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank()
+)
+
+# load integrated ODC seurat object that we have already run monocle3 on
+cur_celltype <- 'ODC'
+fig_dir <- paste0('figures/', cur_celltype, '/'); dir.create(fig_dir)
+seurat_subset <- readRDS(paste0(data_dir, cur_celltype, '_coembed_seurat.rds'))
+
+
+seurat_rna <- readRDS("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf_seurat.rds")
+VariableFeatures(seurat_subset) <- VariableFeatures(seurat_rna)
+
+# correct sample column:
+seurat_subset$sample <- ifelse(seurat_subset$tech == 'rna', seurat_subset$sample, seurat_subset$Sample)
+
+# add sample_tech column
+seurat_subset$sample_tech <- paste0(seurat_subset$sample, '_', seurat_subset$tech)
+
+
+# correct Batch column:
+seurat_subset$Batch <- ifelse(
+  seurat_subset$tech == 'rna',
+  paste0('rna_', seurat_subset$snRNAseq.Batch),
+  paste0('atac_', seurat_subset$Batch)
+)
+
+
+
+```
+
+miloR tutorial
+Link to tutorial:
+
+https://rawcdn.githack.com/MarioniLab/miloR/7c7f906b94a73e62e36e095ddb3e3567b414144e/vignettes/milo_gastrulation.html
+
+```{r eval=FALSE}
+
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+
+# make temp fig dir
+
+################################################################################
+# Step 1: Convert from Seurat to SCE format, and create Milo object
+################################################################################
+
+dir.create('figures/ODC_miloR')
+fig_dir <- 'figures/ODC_miloR/'
+
+# take a small subset of the data to work with for this:
+# sample_barcodes <- sample(colnames(seurat_subset), 10000)
+# seurat_small <- seurat_subset[,sample_barcodes]
+
+# convert from Seurat to SCE format:
+# sce <- seurat_small %>% as.SingleCellExperiment()
+sce <- seurat_subset %>% as.SingleCellExperiment()
+
+# plot UMAP?
+pdf(paste0(fig_dir, 'test_umap.pdf'), width=6, height=6, useDingbats=FALSE)
+plotReducedDim(sce, colour_by="pseudotime", dimred = "UMAP")
+dev.off()
+
+# create Milo object from sce
+odc_milo <- Milo(sce)
+odc_milo
+
+################################################################################
+# Step 2: Compute KNN Graph
+################################################################################
+
+odc_milo <- buildGraph(odc_milo, k = 30, d = 30, reduced.dim = "PCA")
+
+# try to use buildfromadjacency to get the graph straight from Seurat!!!
+
+
+odc_milo <- makeNhoods(odc_milo, prop = 0.1, k = 30, d=30, refined = TRUE, reduced_dims = "PCA")
+
+pdf(paste0(fig_dir, 'nhood_size.pdf'), width=8, height=4, useDingbats=FALSE)
+plotNhoodSizeHist(odc_milo)
+dev.off()
+
+
+
+# count cells in neighborhoods
+odc_milo <- countCells(odc_milo, meta.data = as.data.frame(colData(odc_milo)), sample="sample_tech")
+head(nhoodCounts(odc_milo))
+
+################################################################################
+# Step 3: Define experimental design
+################################################################################
+
+design <- data.frame(colData(odc_milo))[,c("sample", "tech", "Group", "Time.point", "Batch")]
+
+## Convert batch info from integer to factor
+design$Batch <- as.factor(design$Batch)
+design <- distinct(design)
+rownames(design) <- paste0(design$sample, '_', design$tech)
+
+design
+
+
+################################################################################
+# Step 4: compute neighborhood connectivity
+################################################################################
+
+odc_milo <- calcNhoodDistance(odc_milo, d=30, reduced.dim = "PCA")
+
+################################################################################
+# Step 5: diff abundance testing
+################################################################################
+
+da_results <- testNhoods(odc_milo, design = ~ Batch + Time.point + Group, design.df = design)
+
+################################################################################
+# Step 5: visualize results
+################################################################################
+
+p <- ggplot(da_results, aes(logFC, -log10(SpatialFDR))) +
+  geom_point() +
+  geom_hline(yintercept = 1) ## Mark significance threshold (10% FDR)
+
+pdf(paste0(fig_dir, 'milo_volcano.pdf'), width=5, height=5, useDingbats=FALSE)
+p
+dev.off()
+
+
+odc_milo <- buildNhoodGraph(odc_milo)
+
+## Plot single-cell UMAP
+umap_pl <- plotReducedDim(odc_milo, dimred = "UMAP", colour_by="pseudotime", text_by = "pseudotime", text_size = 3, point_size=0.5) +
+  guides(fill="none")
+
+## Plot neighbourhood graph
+nh_graph_pl <- plotNhoodGraphDA(odc_milo, da_results, layout="UMAP",alpha=0.1)
+
+pdf(paste0(fig_dir, 'milo_umap_graph.pdf'), width=16, height=8, useDingbats=FALSE)
+umap_pl + nh_graph_pl +
+  plot_layout(guides="collect")
+dev.off()
+
+# plot beeeeeees ?
+
+da_results <- annotateNhoods(odc_milo, da_results, coldata_col = "pseudotime_bins_10")
+head(da_results)
+
+p <- plotDAbeeswarm(da_results, group.by = "pseudotime_bins_10")
+
+pdf(paste0(fig_dir, 'milo_bees_pseudotime.pdf'), width=5, height=8, useDingbats=FALSE)
+p
+dev.off()
+
+
+```

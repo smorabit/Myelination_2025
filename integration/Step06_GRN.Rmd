@@ -1,0 +1,686 @@
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+library(monocle3)
+library(SeuratWrappers)
+library(cicero)
+theme_set(theme_cowplot())
+
+setwd("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/ATAC")
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank()
+)
+
+# load snATAC-seq seurat seurat_celltype:
+seurat_obj <- readRDS(paste0(data_dir, 'signac_final_07-02-21.rds'))
+seurat_rna <- readRDS("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf_seurat.rds")
+
+DefaultAssay(seurat_obj) <- 'peaks'
+
+# re-load data for current cell type:
+cur_celltype <- 'ODC'
+# cur_celltype <- 'MG'
+# cur_celltype <- 'ASC'
+
+fig_dir <- paste0('figures/', cur_celltype, '/'); dir.create(fig_dir)
+seurat_subset <- readRDS(paste0(data_dir, cur_celltype, '_coembed_seurat.rds'))
+
+
+# subset full atac-seq seurat seurat_celltype with cells that we have pseudotime info for
+# doing it this way because the integrated seurat_celltype doesn't have a slot to add the
+# cicero links.
+seurat_celltype <- seurat_obj[,rownames(subset(seurat_subset@meta.data, tech == 'atac'))]
+
+# find variable features:
+DefaultAssay(seurat_celltype) <- 'RNA'
+VariableFeatures(seurat_celltype) <- VariableFeatures(seurat_rna)
+DefaultAssay(seurat_celltype) <- 'peaks'
+
+# # set archR genome
+# addArchRGenome("mm10")
+# addArchRThreads(threads = 8)
+#
+# # re-load
+# proj <- loadArchRProject(path = "Franklin_ATAC")
+# proj@peakSet$site_name <- paste0(
+#   as.character(seqnames(proj@peakSet)), '-', start(proj@peakSet), '-', end(proj@peakSet)
+# )
+
+```
+
+Plot a violin plot showing the distribution of pseudotime in each condition,
+similar to Fig 4AB in Sarropoulos et al 2021
+
+TBH a stacked bar plot would be better lmao
+
+```{r eval=FALSE}
+
+p <- VlnPlot(seurat_subset, features='pseudotime', group.by='Timepoint', split.by='Group', split.plot=TRUE, pt.size=0)
+
+pdf(paste0(fig_dir, cur_celltype, 'pseudotime_vln.pdf'), width=6, height=3)
+p
+dev.off()
+
+
+```
+
+
+
+Pando Updated attempt running on Microglia, as a test since it's a smaller cell type
+it should run a lot faster
+
+In order to run Pando,
+VariableFeatures must be present in the RNA assay!!!!
+
+```{r eval=FALSE}
+
+
+library(Pando)
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(foreach)
+library(future)
+library(future.apply)
+library(JASPAR2020)
+library(TFBSTools)
+# plan('multiprocess', workers=8)
+library(doParallel)
+registerDoParallel(cores=8)
+
+# data(motifs)
+
+# exclude peaks that don't have any overlapping peaks:
+peak_ranges <- StringToGRanges(rownames(seurat_celltype))
+temp <- IRanges::intersect(peak_ranges, peak_ranges)
+keep_peaks <- peak_ranges %in% temp
+
+seurat_copy <- seurat_celltype
+seurat_copy[['GeneActivity']] <- NULL
+seurat_copy <- seurat_copy[keep_peaks,]
+seurat_celltype[['peaks']] <- seurat_copy[['peaks']]
+rm(seurat_copy)
+
+# exclude Rik genes:
+seurat_copy <- seurat_celltype
+DefaultAssay(seurat_copy) <- 'GeneActivity'
+seurat_copy[['peaks']] <- NULL
+seurat_copy <- seurat_copy[!grepl('Rik', rownames(seurat_copy)),]
+seurat_celltype[['GeneActivity']] <- seurat_copy[['GeneActivity']]
+rm(seurat_copy)
+
+
+#
+#
+# seurat_copy <- seurat_celltype
+# DefaultAssay(seurat_copy) <- 'RNA'
+# seurat_copy[['peaks']] <- NULL
+# seurat_copy <- seurat_copy[!grepl('Rik', rownames(seurat_copy)),]
+# seurat_celltype[['RNA']] <- seurat_copy[['RNA']]
+# rm(seurat_copy)
+
+# seurat_celltype <- subset(seurat_celltype, features=rownames(seurat_celltype)[keep_peaks])
+
+
+# this function intersects the given regions with the set of peaks, only if
+# the regions are specified and exclude_exons = FALSE
+#
+
+load('~/swaruplab/smorabit/analysis/AD_NucSeq_2019/data/Annotations/hg38_mm10_ortho.rda')
+
+motif_names <- GetMotifData(seurat_obj, slot='motif.names')
+motif_names <- data.frame(
+  id = names(motif_names),
+  name = as.character(unlist(motif_names))
+)
+
+motif_conversion <- ensembl %>% subset(Gene.name %in% motif_names$name)
+motif_names <- motif_names[na.omit(match(motif_conversion$Gene.name, motif_names$name)),]
+motif_conversion$id <- motif_names$id
+
+motif_tfs <- select(motif_conversion, c(id, Mouse.gene.name))
+
+# Get a list of motif position frequency matrices from the JASPAR database
+pfm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(species = 9606, all_versions = FALSE)
+)
+pfm <- pfm[motif_conversion$id]
+
+seurat_celltype <- Pando::initiate_grn(
+  seurat_celltype,
+  peak_assay = 'peaks',
+  # rna_assay = 'RNA',
+  rna_assay = 'GeneActivity',
+  # regions = StringToGRanges(rownames(seurat_celltype)[1:1000]),
+  exclude_exons = TRUE
+)
+
+
+seurat_celltype <- find_motifs(
+    seurat_celltype ,
+    pfm = pfm,
+    genome = BSgenome.Mmusculus.UCSC.mm10,
+    motif_tfs = motif_tfs
+)
+
+
+
+# save here so I don't have to keep running this step
+saveRDS(seurat_celltype, paste0(data_dir, 'pando_seurat_ODC.rds'))
+
+# saveRDS(seurat_celltype, paste0(data_dir, 'pando_seurat_MG_attempt3.rds'))
+# seurat_celltype <- readRDS(paste0(data_dir, 'pando_seurat_MG_attempt3.rds'))
+
+seurat_celltype <- Pando::infer_grn(
+    seurat_celltype,
+    genes = rownames(GetAssayData(seurat_celltype, assay='GeneActivity')),
+    peak_to_gene_method = 'Signac',
+    method = 'glm',
+    verbose=2,
+    parallel=TRUE,
+    tf_cor=0
+)
+
+# Error in { : task 34 failed - "<text>:1:8: unexpected symbol
+# 1: 2610316D01Rik
+#            ^"
+
+# extract regulatory modules:
+seurat_celltype <- find_modules(seurat_celltype)
+
+
+saveRDS(seurat_celltype, paste0(data_dir, 'pando_seurat_ODC.rds'))
+
+coef(seurat_celltype)
+
+#
+# modules <- NetworkModules(seurat_celltype)
+# modules@meta
+# modules@features
+
+# re-load data
+seurat_celltype <- readRDS(paste0(data_dir, 'pando_seurat_ODC.rds'))
+
+
+tab <- coef(seurat_celltype)
+modules <- NetworkModules(seurat_celltype)
+modules@meta
+modules@features
+
+
+```
+
+scratch pad to figure out if I have all of the TFs??
+```{r eval=FALSE}
+
+motif2tf <- NetworkTFs(seurat_celltype)
+
+colnames(motif2tf)
+rownames(motif2tf)
+
+# the motifs from Signac Chromvar
+motif_names <- GetMotifData(seurat_obj, slot='motif.names')
+
+unique(as.character(unlist(motif_names)))
+
+```
+
+
+Try to make a visualization based on Jonas' email:
+
+Also can kind of make it like how I did for the hub gene network for
+the Habenula WGCNA?
+
+* get
+
+
+
+```{r eval=FALSE}
+
+
+rna_expr <- Seurat::GetAssayData(seurat_celltype, assay='GeneActivity', slot='data') %>% t %>% as.matrix
+gene_cor <- Matrix::Matrix(cor(rna_expr), sparse=T)
+
+
+modules <- NetworkModules(seurat_celltype)
+tf_net <- modules@meta
+
+reg_mat <- tf_net %>%
+    select(target, tf, estimate) %>%
+    pivot_wider(names_from=tf, values_from=estimate, values_fill=0) %>%
+    column_to_rownames('target') %>% as.matrix
+
+reg_factor_mat <- abs(reg_mat) + 1
+
+weighted_coex_mat <- gene_cor[rownames(reg_factor_mat), colnames(reg_factor_mat)] * sqrt(reg_factor_mat)
+weight_coex_umap <- uwot::umap(weighted_coex_mat)
+
+
+# set up plotting df
+plot_df <- as.data.frame(weight_coex_umap) %>%
+  rename(V1='UMAP1', V2='UMAP2') %>%
+  mutate(gene=rownames(reg_mat))
+
+# add column for tf or gene:
+plot_df$tf <- ifelse(plot_df$gene %in% tf_net$tf, 'TF', 'Gene')
+
+################################################################################
+# Plot a UMAP colored by nothing
+################################################################################
+
+
+p <- ggplot(plot_df, aes(x=UMAP1, y=UMAP2)) +
+     geom_point() +
+     umap_theme
+
+pdf(paste0(fig_dir, 'ODC_pando_TF_umap.pdf'), width=6, height=6, useDingbats=FALSE)
+p
+dev.off()
+
+################################################################################
+# Plot a UMAP with edges in between
+################################################################################
+
+library(network)
+library(sna)
+library(ggnetwork)
+
+# create edge dataframe from the coex matrix
+mat <- weighted_coex_mat
+mat[mat < 0.1] <- 0
+
+edge_list <- reshape2::melt(mat)
+
+n <- network(x = as.matrix(mat), directed=FALSE)
+
+```
+
+
+
+
+################################################################################
+# Beware of the danger zone below
+################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Time to copy and paste the code from infer_grn!!
+
+```{r eval=FALSE}
+
+peak_to_gene_method = 'Signac'
+method = 'glm'
+
+
+params <- Params(seurat_celltype)
+motif2tf <- NetworkTFs(seurat_celltype)
+gene_annot <- Signac::Annotation(seurat_celltype[[params$peak_assay]])
+genes <- VariableFeatures(seurat_celltype, assay=params$rna_assay)
+
+# get assay data
+gene_data <- Matrix::t(Seurat::GetAssayData(seurat_celltype, assay=params$rna_assay))
+gene_groups <- TRUE
+
+peak_data <- Matrix::t(Seurat::GetAssayData(seurat_celltype, assay=params$peak_assay))
+peak_groups <- TRUE
+
+# Select genes to use by intersecting annotated genes with all
+# detected genes in the seurat_celltype
+features <- intersect(gene_annot$gene_name, genes) %>%
+    intersect(rownames(GetAssay(seurat_celltype, params$rna_assay)))
+gene_annot <- gene_annot[gene_annot$gene_name%in%features, ]
+
+
+
+# Get regions
+regions <- NetworkRegions(seurat_celltype)
+peak_data <- peak_data[, regions@peaks]
+colnames(peak_data) <- rownames(regions@motifs@data)
+peaks2motif <- regions@motifs@data
+
+
+peaks_near_gene <- find_peaks_near_genes(
+        peaks = regions@ranges,
+        method = peak_to_gene_method,
+        genes = gene_annot,
+        upstream = 1000000,
+        downstream = 1000000,
+        only_tss = FALSE
+    )
+peaks2gene <- aggregate_matrix(t(peaks_near_gene), groups=colnames(peaks_near_gene), fun='sum')
+
+
+# Select peaks passing criteria
+peaks_at_gene <- as.logical(colMaxs(peaks2gene))
+peaks_with_motif <- as.logical(rowMaxs(peaks2motif))
+
+
+# Subset data to good peaks
+peaks_use <- peaks_at_gene & peaks_with_motif
+peaks2gene <- peaks2gene[, peaks_use, drop=FALSE]
+peaks2motif <- peaks2motif[peaks_use, , drop=FALSE]
+peak_data <- peak_data[, peaks_use, drop=FALSE]
+
+# preparing model input
+tfs_use <- colnames(motif2tf)
+motif2tf <- motif2tf[, tfs_use, drop=FALSE]
+
+names(features) <- features
+
+# testing
+g <- features[2]
+
+
+# loop through all genes and check the value of g_x (should not be all 0!!!)
+temp <- future_lapply(features, function(g){
+  g_x <- gene_data[gene_groups,g,drop=FALSE]
+  sum(g_x)
+})
+
+
+peak_cor <- 0
+
+model_fits <- map_par(features, function(g){
+
+   # Select peaks near gene
+   gene_peaks <- as.logical(peaks2gene[g, ])
+
+   # Select peaks correlating with target gene expression
+   # this correlation seems to be okay?
+   g_x <- gene_data[gene_groups, g, drop=FALSE]
+   peak_x <- peak_data[peak_groups, gene_peaks, drop=FALSE]
+   peak_g_cor <- sparse_cor(peak_x, g_x)
+   peak_g_cor[is.na(peak_g_cor)] <- 0
+   peaks_use <- rownames(peak_g_cor)[abs(peak_g_cor[, 1]) > peak_cor]
+   peak_x <- peak_x[, peaks_use, drop=FALSE]
+   peak_motifs <- peaks2motif[gene_peaks, , drop=FALSE][peaks_use, , drop=FALSE]
+
+   # Select TFs with motifs in peaks
+   # this returns a bunch of empty
+   gene_peak_tfs <- map(rownames(peak_motifs), function(p){
+       x <- as.logical(peak_motifs[p, ])
+       print(sum(peak_motifs[p,]))
+       peak_tfs <- colMaxs(motif2tf[x, , drop=FALSE])
+       peak_tfs <- colnames(motif2tf)[as.logical(peak_tfs)]
+       peak_tfs <- setdiff(peak_tfs, g)
+       return(peak_tfs)
+   })
+   names(gene_peak_tfs) <- rownames(peak_motifs)
+
+   # Check correlation of peaks with target gene
+   gene_tfs <- purrr::reduce(gene_peak_tfs, union)
+   tf_x <- gene_data[gene_groups, gene_tfs, drop=FALSE]
+   tf_g_cor <- sparse_cor(tf_x, g_x)
+   tf_g_cor[is.na(tf_g_cor)] <- 0
+   tfs_use <- rownames(tf_g_cor)[abs(tf_g_cor[, 1]) > tf_cor]
+   if (length(tfs_use)==0){
+       log_message('Warning: No correlating TFs found for ', g, verbose=verbose==2)
+       return()
+   }
+
+   # Filter TFs and make formula string
+   frml_string <- map(names(gene_peak_tfs), function(p){
+       peak_tfs <- gene_peak_tfs[[p]]
+       peak_tfs <- peak_tfs[peak_tfs%in%tfs_use]
+       if (length(peak_tfs)==0){
+           return()
+       }
+       peak_name <- str_replace_all(p, '-', '_')
+       tf_name <- str_replace_all(peak_tfs, '-', '_')
+       formula_str <- paste(
+           paste(peak_name, interaction_term, tf_name, sep=' '), collapse = ' + ')
+       return(list(tfs=peak_tfs, frml=formula_str))
+   })
+   frml_string <- frml_string[!map_lgl(frml_string, is.null)]
+   if (length(frml_string)==0){
+       log_message('Warning: No valid peak:TF pairs found for ', g, verbose=verbose==2)
+       return()
+   }
+
+   target <- str_replace_all(g, '-', '_')
+   model_frml <- as.formula(
+       paste0(target, ' ~ ', paste0(map(frml_string, function(x) x$frml),  collapse=' + '))
+   )
+
+   # Get expression data
+   nfeats <- sum(map_dbl(frml_string, function(x) length(x$tfs)))
+   gene_tfs <- purrr::reduce(map(frml_string, function(x) x$tfs), union)
+   gene_x <- gene_data[gene_groups, union(g, gene_tfs), drop=FALSE]
+   model_mat <- as.data.frame(cbind(gene_x, peak_x))
+   if (scale) model_mat <- as.data.frame(scale(as.matrix(model_mat)))
+   colnames(model_mat) <- str_replace_all(colnames(model_mat), '-', '_')
+
+   log_message('Fitting model with ', nfeats, ' variables for ', g, verbose=verbose==2)
+   fit <- try(fit_model(
+       model_frml,
+       data = model_mat,
+       family = family,
+       method = method,
+       alpha = alpha,
+       ...
+   ), silent=TRUE)
+   if (any(class(fit)=='try-error')){
+       log_message('Warning: Fitting model failed for ', g, verbose=verbose)
+       log_message(fit, verbose=verbose==2)
+       return()
+   } else {
+       fit$gof$nvariables <- nfeats
+       return(fit)
+   }
+}, verbose=verbose, parallel=parallel)
+
+
+```
+
+
+
+
+Pando first attempt
+
+Following this workflow for pando:
+https://quadbiolab.github.io/Pando/index.html
+
+
+```{r eval=FALSE}
+
+library(Pando)
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(foreach)
+data(motifs)
+
+
+# this function intersects the given regions with the set of peaks, only if
+# the regions are specified and exclude_exons = FALSE
+#
+
+seurat_celltype <- initiate_grn(
+  seurat_celltype,
+  peak_assay = 'peaks',
+  rna_assay = 'RNA',
+  # regions = StringToGRanges(rownames(seurat_celltype)[1:1000]),
+  exclude_exons = FALSE
+)
+
+
+regions = StringToGRanges(rownames(seurat_celltype)[1:1000])
+peak_ranges <- StringToGRanges(rownames(GetAssay(seurat_celltype, assay='peaks'))[1:1000])
+cand_ranges <- IRanges::intersect(regions, peak_ranges)
+
+
+
+seurat_celltype <- find_motifs(
+    seurat_celltype ,
+    pfm = motifs,
+    genome = BSgenome.Mmusculus.UCSC.mm10
+)
+
+
+# save here so I don't have to keep running this step
+saveRDS(seurat_celltype, paste0(data_dir, 'pando_seurat_ODC.rds'))
+
+
+# this one fails for all genes!!
+seurat_celltype <- infer_grn(
+    seurat_celltype,
+    peak_to_gene_method = 'Signac',
+    method = 'glm',
+    verbose=2,
+    parallel=TRUE
+)
+
+# seurat_celltype <- infer_grn(
+#     seurat_celltype,
+#     peak_to_gene_method = 'Signac',
+#     method = 'glmnet',
+#     prallel=TRUE
+# )
+
+
+
+
+# https://github.com/quadbiolab/Pando/blob/main/R/grn.R
+# testing:
+regions <- NetworkRegions(seurat_celltype)
+peak_data <- Matrix::t(Seurat::GetAssayData(seurat_celltype, assay='peaks'))
+peak_data <- peak_data[, regions@peaks]
+
+
+
+
+
+colnames(peak_data) <- rownames(regions@motifs@data)
+
+
+
+# ranges do not match peaks?
+regions <- NetworkRegions(seurat_celltype)
+regions@ranges %>% length # 1006
+regions@peaks %>% length # 1008
+regions@peaks %>% unique %>% length # 963
+regions@motifs@data %>% dim # 1006 1590
+
+
+# there are some mismatches above, I think that the "ranges" needs to be the same
+# dimension as the peaks. Ranges influences the motifs
+
+
+# fails here line 131
+# these should be the same dimension but peak_data is larger?
+
+
+
+
+```

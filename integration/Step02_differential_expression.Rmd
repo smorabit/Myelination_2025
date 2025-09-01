@@ -1,0 +1,96 @@
+
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+library(monocle3)
+library(SeuratWrappers)
+theme_set(theme_cowplot())
+
+setwd("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/ATAC")
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+# re-load data for current cell type:
+cur_celltype <- 'ODC'
+fig_dir <- paste0('figures/', cur_celltype); dir.create(fig_dir)
+
+seurat_obj <- readRDS(paste0(data_dir, cur_celltype, '_integrated_seurat.rds'))
+
+```
+
+## calculate trajectory DEGS (t-DEGs) using monocle3:
+
+```{r eval=FALSE}
+
+# make a new CDS with just the RNA-seq data in order to do t-DEGs:
+expr_matrix  <- GetAssayData(subset(seurat_obj, tech == 'rna'), assay='RNA', slot='data')
+pseudotime_genes <- rownames(expr_matrix )[rowSums(expr_matrix )!=0]
+expr_matrix <- expr_matrix[pseudotime_genes,]
+
+cds_subset <- new_cell_data_set(
+  expr_matrix,
+  cell_metadata=seurat_obj@meta.data %>% subset(tech == 'rna')
+)
+
+# identify t-DEGs
+gene_fits <- monocle3::fit_models(
+  cds_subset,
+  model_formula_str = "~pseudotime + batch_integrated + nCount_RNA + percent.mt"
+)
+
+fit_coefs <- coefficient_table(gene_fits)
+tdegs <- fit_coefs %>% filter(term == "pseudotime" & q_value <= 0.05) %>%
+      select(gene_id, term, q_value, estimate)
+
+# write t-degs table as a csv:
+write.csv(tdegs, file=paste0(data_dir, cur_celltype, '_tDEGs.csv'), quote=FALSE, row.names=FALSE)
+
+```
+
+Save t-DEG expression across pseudotime bins for VAE modeing
+
+```{r eval=FALSE}
+
+library(scales)
+
+# re-load t-DEGs for this celltype:
+tdegs <- read.csv(paste0(data_dir, cur_celltype, '_tDEGs.csv'))
+pseudotime_genes <- tdegs$gene_id
+
+# setup RVAE directory
+outdir = '/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/ATAC/RVAgene/RVAgene/data/'
+cur_name <- paste0(cur_celltype, '_RVAE')
+dir.create(paste0(outdir, cur_name))
+
+# average expression / pseudo-expression in pseudotime bins:
+Idents(seurat_obj) <- seurat_obj$pseudotime_bins_100
+average_exp <- AverageExpression(
+  seurat_obj %>% subset(tech == 'rna'),
+  slot='data',
+  assay='RNA',
+  features=pseudotime_genes
+)
+average_exp <- average_exp$RNA
+
+# rescale each gene between -1 and 1:
+scaled_exp <- sapply(1:nrow(average_exp), function(i) scales::rescale(as.numeric(average_exp[i,]), to=c(-1,1))) %>% t %>% as.data.frame
+rownames(scaled_exp) <- rownames(average_exp)
+average_exp <- scaled_exp
+
+# pad with zeros as required by RVAgene:
+average_exp <- cbind(rep(0, nrow(average_exp)), average_exp)
+
+# write to ourput file
+write.table(average_exp, file=paste0(outdir, cur_name, '/', cur_name, '_TRAIN'), sep=',',quote=FALSE, row.names=FALSE, col.names=FALSE)
+write.table(average_exp, file=paste0(outdir, cur_name, '/', cur_name, '_TEST'), sep=',',quote=FALSE, row.names=FALSE, col.names=FALSE)
+write.table(as.data.frame(rownames(average_exp)), file=paste0(outdir, cur_name, '/feature_names.csv' ), sep=',',quote=FALSE, row.names=FALSE, col.names=FALSE)
+
+
+
+```

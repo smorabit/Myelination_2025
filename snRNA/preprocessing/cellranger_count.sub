@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --job-name=cellranger-atac    
+#SBATCH -p standard          
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1          
+#SBATCH --ntasks=1          
+#SBATCH --cpus-per-task=32    
+#SBATCH --error=slurm-%J.err 
+#SBATCH --mem 64G              
+#SBATCH --array=0-15           
+
+SAMPLEDIR="/dfs3b/swaruplab/smorabit/collab/AMRF/data/snRNA/"
+REF="/dfs3b/swaruplab/smorabit/resources/cellranger_reference/refdata-gex-mm10-2020-A/"
+
+SAMPLEDIRS=($(ls $SAMPLEDIR))
+SAMPLE=${SAMPLEDIRS[$SLURM_ARRAY_TASK_ID]}
+
+# call cellranger count
+/dfs7/swaruplab/smorabit/bin/software/cellranger/cellranger-6.0.0/cellranger count \
+  --id=$SAMPLE \
+  --transcriptome=$REF \
+  --fastqs=$SAMPLEDIR/$SAMPLE \
+  --sample=$SAMPLE \
+  --localcores=32 \
+  --localmem=128 \
+  --expect-cells=10000 \
+  --include-introns

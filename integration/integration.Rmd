@@ -1,0 +1,88 @@
+Load the ATAC and RNA datasets
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(Signac)
+
+setwd("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/ATAC")
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+# load datasets
+seurat_atac <- readRDS(paste0(data_dir, 'signac_in_progress.rds'))
+seurat_rna <- readRDS("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf_seurat.rds")
+
+
+# add meta-data column representing the technology 
+seurat_rna$tech <- 'rna'
+seurat_atac$tech <- 'atac'
+
+# switch to RNA assay for ATAC dataset (gene activity matrix)
+DefaultAssay(seurat_atac) <- 'RNA'
+
+# identify variable features in the RNA dataset
+seurat_rna <- FindVariableFeatures(
+  object = seurat_rna,
+  nfeatures = 3500
+)
+
+```
+
+Seurat Integration / Label Transfer:
+
+```{r eval=FALSE}
+
+transfer.anchors <- FindTransferAnchors(
+  reference = seurat_rna,
+  query = seurat_atac,
+  reduction = 'cca',
+  dims = 1:40
+)
+saveRDS(transfer.anchors, paste0(data_dir, 'integration_anchors.rds'))
+
+
+predictions.assay <- TransferData(
+  anchorset = transfer.anchors,
+  refdata = seurat_rna$subcluster_name,
+  prediction.assay = TRUE,
+  weight.reduction = seurat_atac[["harmony"]],
+  dims=1:30
+)
+
+seurat_atac[["predictions"]] <- predictions.assay
+
+# re-name the gene activity assay so we don't erase it
+seurat_atac <- RenameAssays(seurat_atac, RNA = 'GeneActivity')
+
+genes.use <- VariableFeatures(seurat_rna)
+refdata <- GetAssayData(seurat_rna, assay = "RNA", slot = "data")[genes.use, ]
+imputation <- TransferData(
+  anchorset = transfer.anchors,
+  refdata = refdata,
+  weight.reduction = seurat_atac[["harmony"]],
+  dims = 1:30
+)
+seurat_atac[["RNA"]] <- imputation
+
+saveRDS(seurat_atac, paste0(data_dir, 'signac_in_progress_07-02-21.rds'))
+
+################################################################################
+# Process the integrated object 
+################################################################################
+
+integrated <- ScaleData(integrated, features = genes.use, do.scale = FALSE)
+integrated <- RunPCA(integrated, features = genes.use, verbose = FALSE)
+integrated <- RunUMAP(integrated, dims = 1:30)
+
+saveRDS(integrated, paste0(data_dir, 'integrated_snATAC_snRNA.rds'))
+
+p1 <- DimPlot(subset(integrated, tech=='rna'), group.by='subcluster_name', label=TRUE) + umap_theme + NoLegend() + ggtitle('RNA clusters')
+p2 <- DimPlot(subset(integrated, tech=='atac'), group.by='predicted.cluster', label=TRUE) + umap_theme + NoLegend()+ ggtitle('ATAC clusters')
+
+pdf(paste0(fig_dir, 'umap_integrated.pdf'), width=10, height=5, useDingbats=FALSE)
+p1 + p2
+dev.off()
+
+
+```

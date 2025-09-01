@@ -1,0 +1,298 @@
+
+```{r eval=FALSE}
+
+
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+library(ggrepel)
+library(ggrastr)
+
+theme_set(theme_cowplot())
+set.seed(12345)
+
+setwd("/home/groups/singlecell/smorabito/AMRF")
+data_dir <- 'processed/'
+fig_dir <- 'figures/'
+
+```
+
+MiloR analysis for cell proportions 
+
+```{r eval=FALSE}
+
+library(yaml)
+library(tidyverse)
+library(Seurat)
+library(miloR)
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+
+# load the integrated object for the full dataset
+seurat_obj <- readRDS('/home/groups/singlecell/smorabito/AMRF/seurat_objects/integrated_snATAC_snRNA.rds')
+
+################################################################################
+#  Set up the milo object
+################################################################################
+
+# convert to SCE and then to MiloR object:
+milo_obj <- miloR::Milo(as.SingleCellExperiment(seurat_obj))
+
+# compute knn
+milo_obj <- miloR::buildGraph(
+  milo_obj, 
+  k = 30, 
+  d = 30, 
+  reduced.dim = "PCA"
+)
+
+# defining neighborhoods
+milo_obj <- miloR::makeNhoods(
+  milo_obj, 
+  prop = 0.1, 
+  k = 30, 
+  d = 30, 
+  refined = TRUE, 
+  reduced_dims = "PCA"
+)
+
+# fix some meta-data
+tmp <- ifelse(seurat_obj$tech == 'atac', seurat_obj$Sample, seurat_obj$Sample.ID)
+tmp <- paste0(seurat_obj$tech, '_', tmp)
+colData(milo_obj)$sample_tech <- tmp
+
+# fix timepoint metadata
+tmp <- ifelse(seurat_obj$tech == 'rna', seurat_obj$Time.point, seurat_obj$Timepoint)
+colData(milo_obj)$Timepoint <- tmp
+
+# major cell type:
+tmp <- ifelse(seurat_obj$tech == 'rna', as.character(seurat_obj$cell_type), as.character(seurat_obj$Cell.Type))
+colData(milo_obj)$cell_type <- tmp
+
+table(seurat_obj$predicted.cluster)
+
+# count cells in each neighborhood 
+milo_obj <- miloR::countCells(
+    milo_obj, 
+    meta.data = as.data.frame(colData(milo_obj)), 
+    sample='sample_tech'
+)
+
+# graph of neighborhoods
+milo_obj <- miloR::buildNhoodGraph(milo_obj)
+
+#------------------------------------------------------
+# Create the design matrix
+#------------------------------------------------------
+
+# load the plotting functions
+source("~/analysis/SERPENTINE/bin/DEG_snakemake_v3/scripts/plotting/plotting_functions.R")
+
+fig_dir <- 'figures/'
+
+
+mixed_prop <- 0.7
+
+# subset groups?
+subset_groups <- c("Naive")
+
+replicate_col <- 'sample_tech'
+condition <- 'Group'
+subset_cols <- 'Timepoint'
+covariates <- NULL
+
+g1_name <- 'Old'
+g2_name <- 'Young'
+
+da_results_combined <- data.frame()
+for(subset_groups in unique(colData(milo_obj)$Timepoint)){
+    print(subset_groups)
+
+    subset_cols_split <- strsplit(subset_cols, ';')[[1]]
+    subset_groups_split <- strsplit(subset_groups, ';')[[1]]
+
+    meta_cols <- c(condition, subset_cols_split, covariates)
+
+    # initialize the design matrix:
+    design_df <- as.data.frame(colData(milo_obj))[,c(replicate_col, meta_cols)]
+
+    # subset the design matrix if necessary
+    if(!any(subset_groups == "")){
+        for(j in 1:length(subset_cols_split)){
+            cur_subset <- subset_cols_split[j]
+            cur_groups <- strsplit(subset_groups_split[j], ',')[[1]]
+            design_df <- design_df %>% subset(
+            as.character(get(cur_subset)) %in% cur_groups
+            )
+        }
+    }
+
+    design_df <- fix_metadata(
+        design_df,
+        cols = meta_cols
+    )
+
+    g1_name_fix <- fix_metadata(g1_name)
+    g2_name_fix <- fix_metadata(g2_name)
+
+    # create the design matrix 
+    design_df <- design_df[,c(replicate_col, paste0(meta_cols, '_fix'))] %>% 
+    as.data.frame() %>% 
+    dplyr::distinct()
+
+    # re-name the row and column names
+    colnames(design_df) <- c(replicate_col, meta_cols)
+    rownames(design_df) <- design_df[,replicate_col]
+
+
+    # set up the contrast of interest!
+    cur_contrast <- paste0(paste0(condition, g1_name_fix), '-', paste0(condition, g2_name_fix))
+
+    # define the formula
+    formula <- as.formula(paste0(c("~ 0", covariates, condition), collapse=" + "))
+
+    #------------------------------------------------------
+    # Run the differential abundance test!
+    #------------------------------------------------------
+
+    da_results <- miloR::testNhoods(
+        milo_obj, 
+        design = formula, 
+        design.df = design_df, 
+        model.contrasts = cur_contrast,
+        fdr.weighting="graph-overlap", 
+        norm.method="TMM",
+        reduced.dim = "PCA"
+    )
+
+    #------------------------------------------------------
+    # Add cluster labels to the neighborhoods
+    # 
+    # based on seurat_obj$subcluster_name
+    #
+    # Make a new column that just shows 
+    # ODC subtypes, but major cell types for everything else
+    #
+    # OPC (+ NFOL) --> MF-ODC --> Int-ODC --> Mat-ODC
+    # ASC
+    # MG
+    # VASC (PER, END)
+    # Neuron 
+    #
+    # Remove very small clusters (SCH, EPD, etc)
+    #------------------------------------------------------
+
+    tmp <- seurat_obj$subcluster_name 
+    tmp <- ifelse(grepl("NFOL", tmp), "OPC", tmp)
+    tmp <- ifelse(grepl("ASC", tmp), "ASC", tmp)
+    tmp <- ifelse(grepl("MG", tmp), "MG + Immune", tmp)
+    tmp <- ifelse(grepl("MM", tmp), "MG + Immune", tmp)
+    tmp <- ifelse(grepl("PIM", tmp), "MG + Immune", tmp)
+    tmp <- ifelse(grepl("Neuron", tmp), "Neuron", tmp)
+    tmp <- ifelse(grepl("PER", tmp), "VASC", tmp)
+    tmp <- ifelse(grepl("END", tmp), "VASC", tmp)
+    tmp <- ifelse(grepl("VLMC", tmp), "VASC", tmp)
+    tmp <- ifelse(tmp %in% c('EPD', 'SCH'), "Other", tmp)
+    table(tmp)
+
+    tmp <- factor(tmp, levels=c(
+        'OPC', 'MF-ODC', 'Int-ODC', 'Mat-ODC',
+        'ASC', 'MG + Immune', 'VASC', 'Neuron', 'Other'
+    ))
+    colData(milo_obj)$cell_group <- tmp
+
+    group_var <- 'cell_group'
+
+    # add neighborhood annotations
+    da_results <- miloR::annotateNhoods(
+        milo_obj, 
+        da_results, 
+        coldata_col = group_var
+    )
+
+    # determine which neighborhoods are "Mixed" with respect to the annotation based on a threshold
+    da_results[,group_var] <- ifelse(da_results[,paste0(group_var, '_fraction')] <= mixed_prop, "Mixed", da_results[,group_var])
+
+    # re-name:
+    colnames(da_results)[(ncol(da_results)-1):ncol(da_results)] <- c('cluster', 'cluster_fraction')
+
+    # add information about the specific DA test
+    da_results$group1 <- g1_name 
+    da_results$group2 <- g2_name 
+
+    # re-order columns:
+    da_results <- da_results %>% 
+        dplyr::select(
+            c(
+                Nhood, cluster, group1, group2, PValue, 
+                FDR, SpatialFDR, logFC, logCPM, F, cluster_fraction
+            )
+        )
+
+    #------------------------------------------------------
+    # Plot the results
+    #------------------------------------------------------
+
+    da_results$cluster <- factor(
+        as.character(da_results$cluster),
+        levels = rev(levels(colData(milo_obj)[,group_var]))
+    )
+
+    da_results$Timepoint <- subset_groups 
+
+    da_results_combined <- rbind(da_results_combined, da_results)
+
+    p1 <- DABoxPlot(
+        da_results %>% subset(cluster != 'Other'),
+        group_by = 'cluster', 
+        signif_col = 'PValue',
+        raster_dpi = 500,
+        high_color = 'darkorchid3',
+        low_color = 'seagreen',
+        order_groups =FALSE
+    ) + 
+    ggtitle(paste0(g1_name, ' vs. ', g2_name)) + 
+    theme(
+        panel.grid = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_blank()
+    ) 
+
+    pdf(paste0(fig_dir,'milo_distributions_', subset_groups,'.pdf'), width=5, height=5)
+    print(p1)
+    dev.off()
+
+    p2 <- DAReductionPlot(
+        milo_obj,
+        da_results,
+        centroids = group_var,
+        reduction = "UMAP",
+        signif_col = "PValue",
+        insignif_color = "lightgrey",
+        raster_dpi = 300,
+        high_color = 'darkorchid3',
+        low_color = 'seagreen'
+    ) + 
+    ggtitle(paste0(g1_name, ' vs. ', g2_name)) + 
+    coord_fixed()
+
+    pdf(paste0(fig_dir,'milo_umap_', subset_groups,'.pdf'), width=6, height=6)
+    print(p2)
+    dev.off()
+
+
+}
+
+# save the DA results
+write.csv(
+    da_results_combined, 
+    file=paste0(data_dir, 'differential_cell_abundance_miloR.csv'),
+    row.names=FALSE, quote=FALSE
+)
+
+
+```

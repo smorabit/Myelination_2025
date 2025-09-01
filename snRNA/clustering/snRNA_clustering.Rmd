@@ -1,0 +1,497 @@
+
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(viridis)
+library(ggpubr)
+library(ggrepel)
+library(patchwork)
+library(RColorBrewer)
+theme_set(theme_cowplot())
+
+setwd( "/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/")
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank()
+)
+
+
+
+umap_theme_box <- theme(
+  axis.line=element_blank(),
+  axis.ticks=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border = element_rect(colour = "black", fill=NA, size=1),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# load data that was analyzed by vivek:
+seurat_obj <- readRDS('/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final.rds')
+
+colfunc <- colorRampPalette(c(rev(brewer.pal(9, 'Purples' )[2:9]), 'white'))
+
+
+```
+
+Save counts matrix etc so I can run scrublet to locate the doublets
+
+```{r eval=FALSE}
+
+# save counts matrix and meta data so we can load into scanpy to use scrublet:
+
+X <- GetAssayData(seurat_obj, assay='RNA', slot='counts')
+Matrix::writeMM(X, file="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_counts.mtx")
+
+seurat_obj$barcode <- colnames(seurat_obj)
+meta <- seurat_obj@meta.data
+write.csv(meta, file="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_meta.csv", quote=FALSE)
+
+gene_names <- rownames(seurat_obj)
+write.table(gene_names, file="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_gene_names.csv", quote=FALSE, row.names=FALSE, col.names=FALSE, sep=',')
+
+```
+
+scrublet
+
+```{python}
+
+import scanpy as sc
+import scrublet as scr
+import numpy as np
+from matplotlib import pyplot as plt
+import argparse
+import os
+from scipy import io
+from scipy.sparse import coo_matrix, csr_matrix
+import pandas as pd
+import anndata
+sc.settings.set_figure_params(dpi=500, dpi_save=1000, figsize=(5,5), facecolor='white')
+
+
+# load sparse matrix:
+X = io.mmread("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_counts.mtx")
+
+# create anndata object
+adata = anndata.AnnData(
+    X=X.transpose().tocsr()
+)
+
+# load sample metadata:
+sample_meta = pd.read_csv("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_meta.csv")
+
+# load gene names:
+with open("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_gene_names.csv", 'r') as f:
+    gene_names = f.read().splitlines()
+
+
+adata.obs = sample_meta
+adata.obs.index = adata.obs['barcode']
+adata.obs = adata.obs.drop(labels='barcode', axis=1)
+adata.var.index = gene_names
+
+
+# compute doublets for each sample:
+meta_list = []
+for sample in adata.obs['Sample.ID'].unique():
+    print(sample)
+    cur_adata = adata[adata.obs['Sample.ID'] == sample]
+
+    scrub = scr.Scrublet(cur_adata.X)
+    cur_adata.obs['doublet_scores'], predicted_doublets = scrub.scrub_doublets()
+    cur_adata.obs['doublets'] = np.where(predicted_doublets== False, 'Singlet', 'Doublet')
+    print(cur_adata.obs.doublets.value_counts())
+    print()
+    meta_list.append(cur_adata.obs)
+
+# combine the doublet metadata
+meta = pd.concat(meta_list)
+meta = meta[['doublet_scores', 'doublets']]
+
+
+doublet_df = pd.merge(adata.obs, meta, left_index=True, right_index=True)
+doublet_df = doublet_df[['doublet_scores', 'doublets']]
+doublet_df.to_csv("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets.csv")
+
+```
+
+Plot the doublets in Seurat
+
+```{r eval=FALSE}
+
+# load the doublet table into R and add to seurat object:
+doublet_df <- read.csv("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets.csv")
+
+seurat_obj$doublet_scores <- doublet_df$doublet_scores
+seurat_obj$doublets <- doublet_df$doublets
+
+# plot the doublet scores
+p1 <- FeaturePlot(seurat_obj, features='doublet_scores', raster=FALSE, order=TRUE) + umap_theme +
+  scale_color_gradientn(colors=magma(256))
+
+p2 <- DimPlot(seurat_obj, cells.highlight=colnames(seurat_obj)[seurat_obj$doublets=='Doublet']) + umap_theme + NoLegend() + ggtitle('predicted doublets') + theme(plot.title=element_text(hjust=0.5))
+
+p3 <- DimPlot(seurat_obj, group.by='cell_type', label=TRUE, raster=FALSE) + umap_theme + NoLegend()
+
+pdf(paste0(fig_dir, 'umap_doublets.pdf'), width=15, height=5)
+p1 | p2 | p3
+dev.off()
+
+# remove the cells predicted as doublets
+seurat_obj <- subset(seurat_obj, doublets=='Singlet')
+seurat_obj <- subset(seurat_obj, cell_type != 'Doublet')
+
+```
+<!--
+re-process with Harmony:
+
+```{r eval=FALSE}
+
+library(harmony)
+
+seurat_obj <- FindVariableFeatures(seurat_obj, nfeatures=3500)
+VariableFeatures(seurat_obj) <- VariableFeatures(seurat_obj)[!grepl("^mt-", VariableFeatures(seurat_obj))]
+seurat_obj <- ScaleData(seurat_obj, features=VariableFeatures(seurat_obj))
+
+# dim reduction
+seurat_obj <- RunPCA(seurat_obj, features=VariableFeatures(seurat_obj))
+seurat_obj <- RunHarmony(seurat_obj, dims=1:30, group.by='snRNAseq.Batch')
+seurat_obj <- RunUMAP(seurat_obj, reduction='harmony', dims = 1:30, n.neighbors=15L, min.dist=0.10)
+seurat_obj <- FindNeighbors(seurat_obj, dims=1:30, reduction='harmony', annoy.metric='cosine')
+seurat_obj <- FindClusters(seurat_obj, resolution = 1)
+
+
+p1 <- DimPlot(seurat_obj, group.by='cell_type', label=TRUE, raster=FALSE) + umap_theme + NoLegend()
+p2 <- DimPlot(seurat_obj, group.by='cluster_annotation', label=TRUE, raster=FALSE) + umap_theme + NoLegend()
+p3 <- DimPlot(seurat_obj, group.by='seurat_clusters', label=TRUE, raster=FALSE) + umap_theme + NoLegend() + ggtitle('harmony clusters')
+
+pdf(paste0(fig_dir, 'umap_harmony_celltype_noDoublets.pdf'), width=16, height=5)
+p1 + p2 + p3
+dev.off()
+
+# highlight the neurons
+p2 <- DimPlot(seurat_obj, cells.highlight=colnames(seurat_obj)[seurat_obj$cell_type=='Neuron'], raster=FALSE) + umap_theme + NoLegend() + ggtitle('Neurons') + theme(plot.title=element_text(hjust=0.5))
+pdf(paste0(fig_dir, 'umap_neurons.pdf'), width=10, height=5)
+p1 | p2
+dev.off()
+
+
+p1 <- DimPlot(seurat_obj, group.by='snRNAseq.Batch', label=FALSE, raster=FALSE) + umap_theme + NoLegend()
+p2 <- DimPlot(seurat_obj, group.by='Sample.ID', label=FALSE, raster=FALSE) + umap_theme + NoLegend()
+
+pdf(paste0(fig_dir, 'umap_harmony_batches.pdf'), width=10, height=5)
+p1 + p2
+dev.off()
+
+
+p1 <- DimPlot(seurat_obj, label=FALSE, raster=FALSE, cells.highlight=colnames(seurat_obj)[seurat_obj$seurat_clusters == 16]) + umap_theme + NoLegend()
+
+pdf(paste0(fig_dir, 'umap_harmony_clust16.pdf'), width=5, height=5)
+p1
+dev.off()
+
+# plot the UMAP split by clusters:
+
+p1 <- DimPlot(seurat_obj, label=FALSE, raster=FALSE, split.by='seurat_clusters', group.by='seurat_clusters', ncol=7) + umap_theme + NoLegend()
+pdf(paste0(fig_dir, 'umap_harmony_clusters_split.pdf'), width=20, height=20)
+p1
+dev.off()
+
+``` -->
+
+I think it looks kind of weird with Harmony so I am going to try onlin inmf instead:
+
+```{r eval=FALSE}
+
+library(rliger)
+
+exp_mat <- GetAssayData(seurat_obj, slot='counts')
+expression_list <- list(
+  '1' = exp_mat[,rownames(seurat_obj@meta.data %>% subset(snRNAseq.Batch == '1'))],
+  '2' = exp_mat[,rownames(seurat_obj@meta.data %>% subset(snRNAseq.Batch == '2'))]
+)
+rm(exp_mat); gc();
+
+
+liger_obj <- createLiger(expression_list)
+
+
+liger_obj <- normalize(liger_obj)
+
+# find variable genes in each dataset
+pdf(paste0(fig_dir, 'liger_variableGenes.pdf'), width=8, height=8)
+liger_obj <- selectGenes(
+  liger_obj,
+  var.thresh =c(0.2,0.225),
+  do.plot=T
+)
+dev.off()
+liger_obj <- scaleNotCenter(liger_obj)
+
+# run online iNMF
+liger_obj = online_iNMF(liger_obj, k=30, max.epochs=5)
+
+# quantile normalization
+liger_obj  = quantile_norm(liger_obj)
+liger_obj  = runUMAP(liger_obj)
+
+pdf('figures/liger_umap.pdf', width=8, height=8)
+plotByDatasetAndCluster(liger_obj, axis.labels = c("UMAP1","UMAP2"))
+dev.off()
+
+saveRDS(liger_obj, file="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf.rds")
+liger_obj <- readRDS("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf.rds")
+
+# transfer iNMF matrix to seurat obj:
+seurat_obj@reductions$online_iNMF <- CreateDimReducObject(
+    loadings=t(liger_obj@W),
+    embeddings=liger_obj@H.norm[colnames(seurat_obj),],
+    key="onlineiNMF_",
+    assay="RNA"
+  )
+
+
+
+seurat_obj <- RunUMAP(seurat_obj, reduction='online_iNMF', dims = 1:30, n.neighbors=15L, min.dist=0.10)
+seurat_obj <- FindNeighbors(seurat_obj, dims=1:30, reduction='online_iNMF', annoy.metric='cosine')
+seurat_obj <- FindClusters(seurat_obj, resolution = 0.5)
+
+
+p1 <- DimPlot(seurat_obj, group.by='cell_type', label=TRUE, raster=FALSE) + umap_theme + NoLegend()
+p2 <- DimPlot(seurat_obj, group.by='cluster_annotation', label=TRUE, raster=FALSE) + umap_theme + NoLegend()
+p3 <- DimPlot(seurat_obj, group.by='seurat_clusters', label=TRUE, raster=FALSE) + umap_theme + NoLegend() + ggtitle('inmf clusters')
+
+pdf(paste0(fig_dir, 'umap_inmf_celltype_noDoublets.pdf'), width=16, height=5)
+p1 + p2 + p3
+dev.off()
+
+
+p1 <- DimPlot(seurat_obj, label=FALSE, raster=FALSE, split.by='seurat_clusters', group.by='seurat_clusters', ncol=7) + umap_theme + NoLegend()
+pdf(paste0(fig_dir, 'umap_inmf_noDoublets_clusters_split.pdf'), width=20, height=20)
+p1
+dev.off()
+
+# save so we can run parallel marker genes:
+saveRDS(seurat_obj, file="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf_seurat.rds")
+
+
+```
+
+Plot canonical cell type markers:
+
+```{r eval=FALSE}
+
+
+canonical_markers <- list(
+  'Astro' = c('Gfap', 'Aqp4', 'Slc1a2', 'Gria1'),
+  'Pan-neuron' = c('Snap25', 'Syt1', 'Chat'),
+  'Excitatory' = c('Slc17a7', 'Satb2'),
+  'Inhibitory' = c('Gad1', 'Gad2'),
+  'Microglia' = c('Csf1r', 'Cd74', 'P2ry12'),
+  'Oligo' = c('Mobp', 'Mbp', 'Mog'),
+  'Imm-Olig' = c('Itpr2', 'Apoe', 'Plp1', 'Tcf7l2'),
+  'OPC' = c('Pdgfra', 'Cspg4'),
+  'Vascular' = c('Pdgfrb', 'Flt1', 'Kdr', 'Abcc9'),
+  'Ependymal' = c('Dnah11'),
+  'VLMC' = c('Vtn', 'Lum', 'Col1a2')
+)
+
+
+colfunc <- colorRampPalette(c(rev(brewer.pal(9, 'Purples' )[2:9]), 'white'))
+
+
+p <- DotPlot(seurat_obj, features=canonical_markers, group.by='seurat_clusters', dot.min=0.15 ) +
+  RotatedAxis() +
+    scale_color_gradientn( name='Prediction Score',
+    colors=rev(colfunc(256)),
+    guide = guide_colorbar(barwidth=0.5, barheight=20, ticks=FALSE, label=FALSE)
+) +
+  ylab('') + xlab('')
+pdf(paste0(fig_dir, 'marker_gene_dotplot.pdf'), width=12, height=10, useDingbats=FALSE)
+p
+dev.off()
+
+
+```
+
+Cluster DEGs:
+
+Combine the results of the DEG tests into big tables:
+
+```{r eval=FALSE}
+
+setwd("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/DEGs/")
+
+DEG_dir <- "~/swaruplab/smorabit/collab/AMRF/analysis/DEGs/data/"
+DEG_tests <- dir(DEG_dir)
+
+
+combined <- Reduce(rbind, lapply(dir(paste0(DEG_dir)), function(file){
+  read.csv(paste0(DEG_dir, file))
+}))
+
+write.csv(combined, file=paste0('DEGs/cluster_markers.csv'), quote=FALSE, row.names=FALSE)
+
+
+DEG_dir <- "~/swaruplab/smorabit/collab/AMRF/analysis/DEGs/"
+
+# settings for cluster DEGs
+cur_file <-"cluster_markers.csv"
+clusters <- 'seurat_clusters'
+w=14; h=16; ncols=5
+dw=16; dh=8; # width and height for dot plots
+
+# create output dir:
+name = str_split(cur_file, '[.]')[[1]][1]
+dir.create(paste0(fig_dir, name))
+cur_degs <- read.csv(paste0(DEG_dir, cur_file), stringsAsFactors=FALSE)
+
+# get color scheme:
+p <- DimPlot(seurat_obj, group.by=clusters, reduction='umap', label=T)
+g <- ggplot_build(p)
+colors <- g$data[[1]]["colour"]
+groups <- g$data[[1]]['group']
+color_df <- unique(data.frame(colors, groups)) %>% arrange(group)
+color_df$group <- unique(seurat_obj@meta.data[,clusters])
+color_scheme <- color_df$colour
+names(color_scheme) <- color_df$group
+
+
+
+################################################################################
+# Dot Plot of top 20 genes
+################################################################################
+
+library(RColorBrewer)
+
+
+dir.create(paste0(fig_dir, name, '/dotplots/'))
+
+colfunc <- colorRampPalette(c(rev(brewer.pal(9, 'Purples' )[2:9]), 'white'))
+
+
+for(cur_group in unique(cur_degs$group)){
+
+  print(cur_group)
+  genes <- cur_degs %>% subset(group == cur_group) %>% top_n(20, wt=avg_log2FC) %>% .$gene
+
+
+  # dimplot highlighting the current group:
+  umap_plot <- DimPlot(seurat_obj,group.by=clusters, cells.highlight=colnames(seurat_obj)[seurat_obj@meta.data[,clusters] == cur_group], label=TRUE, raster=FALSE) + NoLegend() + umap_theme_box +  ylab('') + xlab('') + ggtitle('')
+
+  p <- DotPlot(seurat_obj, features=genes, group.by=clusters, dot.min=0.15 ) +
+    RotatedAxis() +
+      scale_color_gradientn(
+      colors=rev(colfunc(256)),
+      guide = guide_colorbar(barwidth=0.5, barheight=20, ticks=FALSE, label=FALSE)
+  ) +
+    ylab('') + xlab('')
+
+  pdf(paste0(fig_dir, name, '/dotplots/', gsub(' ', '_',  cur_group), '_top_genes.pdf'), width=dw, height=dh, useDingbats=FALSE)
+  patch <- umap_plot + p + plot_layout(widths=c(1,2))
+  print(patch)
+  dev.off()
+}
+
+```
+
+Get major cell types based on the marker genes:
+
+```{r eval=FALSE}
+
+celltype_df <- read.csv("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/data/celltype_annotation.csv", stringsAsFactors=FALSE)
+seurat_obj$cell_type <- celltype_df$celltype[match(seurat_obj$seurat_clusters, celltype_df$cluster)]
+seurat_obj$cluster_name <- celltype_df$cluster_name[match(seurat_obj$seurat_clusters, celltype_df$cluster)]
+
+p1 <- DimPlot(seurat_obj, group.by='cell_type', label=TRUE, raster=FALSE) + umap_theme + NoLegend()
+p2 <- DimPlot(seurat_obj, group.by='seurat_clusters', label=TRUE, raster=FALSE) + umap_theme + NoLegend()
+p3 <- DimPlot(seurat_obj, group.by='cluster_name', label=TRUE, raster=FALSE) + umap_theme + NoLegend()
+
+pdf(paste0(fig_dir, 'umap_annotated_celltypes.pdf'), width=12, height=4)
+p1 | p2 | p3
+dev.off()
+
+```
+
+Plot expression of ODC lineage genes:
+
+```{r eval=FALSE}
+
+# subset by ODCs & OPCs:
+seurat_odc <- subset(seurat_obj, cell_type %in% c('OPC', 'ODC'))
+
+# plot the split by cluster
+p <- DimPlot(seurat_odc, group.by='cluster_name', split.by='cluster_name', ncol=4) + umap_theme + NoLegend()
+pdf(paste0(fig_dir, 'ODC_clusters_split.pdf'), width=12, height=9, useDingbats=FALSE)
+p
+dev.off()
+
+ODC_markers <- c('Pdgfra', 'Cspg4', 'Sox6', 'Nkx2-2', 'Neu4', 'Tcf7l2', 'Itpr2', 'Tmem2',  'Mal', 'Mog', 'Serinc5', 'Plp1', 'Opalin', 'Klk6', 'Apod')
+p <- DotPlot(seurat_odc, features=ODC_markers, group.by='cluster_name', dot.min=0.15, scale=TRUE) +
+  RotatedAxis() +
+    scale_color_gradientn(
+    colors=rev(colfunc(256)),
+    guide = guide_colorbar(barwidth=0.5, barheight=20, ticks=FALSE, label=FALSE)
+) +
+  ylab('') + xlab('')
+pdf(paste0(fig_dir, 'ODC_maturation_markers.pdf'), width=6, height=6, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+# ODC cluster labels:
+odc_labels <- c('OPC', 'NFOL', 'MF-ODC', 'Int-ODC', 'MF-ODC', 'Int-ODC', 'Mat-ODC', 'Int-ODC', 'Mat-ODC', 'Int-ODC', 'Int-ODC', 'Int-ODC')
+names(odc_labels) <- c(paste0('OPC', 1:2), paste0('ODC', 1:10))
+
+
+seurat_obj$subcluster_name <- ifelse(
+  seurat_obj$cell_type %in% c('OPC', 'ODC'),
+  odc_labels[seurat_obj$cluster_name],
+  seurat_obj$cluster_name
+)
+
+
+# plot the split by cluster
+p <- DimPlot(seurat_rna, group.by='subcluster_name', label=TRUE, raster=FALSE) + umap_theme + NoLegend()
+pdf(paste0(fig_dir, 'umap_subcluster_name.pdf'), width=7, height=6, useDingbats=FALSE)
+p
+dev.off()
+
+
+# make a new column for cellchat where we combine the Neuron, ASC, MG, and PIM clusters:
+seurat_obj$subcluster_name <- ifelse(grepl('Neuron', seurat_obj$cluster_name), seurat_obj$cluster_name, seurat_obj$subcluster_name)
+
+seurat_obj$cellchat_clusters <- ifelse(grepl('Neuron', seurat_obj$subcluster_name), 'Neuron', seurat_obj$subcluster_name)
+seurat_obj$cellchat_clusters <- ifelse(grepl('ASC', seurat_obj$subcluster_name), 'ASC', seurat_obj$cellchat_clusters)
+seurat_obj$cellchat_clusters <- ifelse(grepl('MG', seurat_obj$subcluster_name), 'MG', seurat_obj$cellchat_clusters)
+seurat_obj$cellchat_clusters<- ifelse(grepl('PIM', seurat_obj$subcluster_name), 'PIM', seurat_obj$cellchat_clusters)
+
+p <- DimPlot(seurat_obj, group.by='cellchat_clusters', label=TRUE, raster=FALSE) + umap_theme
+pdf(paste0(fig_dir, 'umap_cellchat_clusters.p
+df'), width=8, height=6, useDingbats=FALSE)
+p
+dev.off()
+
+
+saveRDS(seurat_obj, file="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf_seurat.rds")
+
+
+```
