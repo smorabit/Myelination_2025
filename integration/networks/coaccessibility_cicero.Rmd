@@ -1,0 +1,237 @@
+
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+# library(monocle3)
+library(SeuratWrappers)
+library(cicero)
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC")
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+
+# load snRNA-seq seurat object:
+seurat_rna <- readRDS("/dfs7/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/snRNA_processed_seurat.rds")
+
+# load the ATAC
+seurat_obj <- readRDS('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/snATAC_processed_seurat.rds')
+DefaultAssay(seurat_obj) <- 'peaks'
+
+# re-load data for current cell type:
+cur_celltype <- 'ODC'
+fig_dir <- paste0('figures/', cur_celltype, '/'); dir.create(fig_dir)
+
+# load coembed object
+seurat_subset <- readRDS(paste0(data_dir, cur_celltype, '_coembed_seurat.rds'))
+
+# for young / old analysis
+
+# subset old/young:
+cur_group <- 'Young'
+cur_group <- 'Old'
+
+subset.cells <- ((seurat_obj$Time.point == 'Naive' & seurat_obj$subcluster_name == 'OPC') |
+(seurat_obj$Time.point == 'Day.5' & seurat_obj$subcluster_name %in% c('OPC', 'NFOL')) |
+(seurat_obj$Time.point == 'Day.14' & seurat_obj$subcluster_name %in% c('MF-ODC', 'Int-ODC')) |
+(seurat_obj$Time.point == 'Day.30' & seurat_obj$subcluster_name == 'Mat-ODC')) &
+(seurat_obj$Group == cur_group)
+table(subset.cells)
+
+# subset the seurat obj
+seurat_celltype <- seurat_obj[,subset.cells]
+dim(seurat_celltype)
+
+################################################################################
+# Load ArchR project to extract peak info
+################################################################################
+
+library(ArchR)
+
+# ArchR dataset:
+addArchRGenome("mm10")
+addArchRThreads(threads = 8)
+proj <- loadArchRProject(path = "/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/Franklin_ATAC/")
+proj@peakSet$peak <- paste0(
+  as.character(seqnames(proj@peakSet)), '-',
+  as.character(start(proj@peakSet)), '-',
+  as.character(end(proj@peakSet))
+)
+peakset <- data.frame(
+  'peak' = proj@peakSet$peak,
+  'peakType' = proj@peakSet$peakType,
+  'nearestGene' = proj@peakSet$nearestGene
+)
+rownames(peakset) <- peakset$peak
+
+
+```
+
+Perform co-accessibility analysis with cicero
+
+```{r eval=FALSE}
+
+DefaultAssay(seurat_celltype) <- 'peaks'
+atac.cds <- as.cell_data_set(x = seurat_celltype)
+cicero.cds <- make_cicero_cds(atac.cds, reduced_coordinates = reducedDims(atac.cds)$UMAP)
+
+# load genome sizes
+genome.df <- read.csv("/dfs7/swaruplab/smorabit/resources/hg38.chrom.sizes", sep='\t', header=FALSE)
+colnames(genome.df) <- c('chr', 'length')
+
+# run cicero:
+conns <- cicero::run_cicero(
+  cds = cicero.cds,
+  genomic_coords = genome.df,
+  window = 5e+05,
+  sample_num = 100
+)
+
+# find cis co-accessibility networks
+ccans <- generate_ccans(conns)
+
+# save conns & ccan objects:
+save(conns, ccans, file=paste0(data_dir, cur_celltype, '_', cur_group, '_cicero_connections.rda'))
+
+```
+
+Identify gene-linked candidate cis-regulatory elements (gl-cCREs)
+
+To link genes & cCREs using only co-accessibility:
+* for peak1 and peak2, get the peak annotation from ArchR and add to table
+* for peak1 and peak2, get the nearest gene from ArchR and add to table
+* subset by some small co-accessibility value
+* subset where Peak1 is a promoter & Peak2 is not a promoter
+
+```{r eval=FALSE}
+
+# re-load cicero tables (conns, ccans):
+load(file=paste0(data_dir, cur_celltype, '_', cur_group, '_cicero_connections.rda'))
+promoter_peaks <- proj@peakSet %>% subset(peakType == 'Promoter') %>% .$peak %>% unique
+
+# get all non-zero links:
+link_df <- conns %>% subset(coaccess > 0)
+link_df$Peak1 <- as.character(link_df$Peak1)
+link_df$Peak2 <- as.character(link_df$Peak2)
+
+# nearest gene & peakType for peak1
+# temp <- peakset[link_df$Peak1,]
+temp <- peakset[match(link_df$Peak1, peakset$peak),]
+link_df$Peak1_nearestGene <- temp$nearestGene
+link_df$Peak1_type <- temp$peakType
+all.equal(temp$peak, link_df$Peak1)
+
+# nearest gene & peakType for peak2
+temp <- peakset[match(link_df$Peak2, peakset$peak),]
+link_df$Peak2_nearestGene <- temp$nearestGene
+link_df$Peak2_type <- temp$peakType
+all.equal(temp$peak, link_df$Peak2)
+
+# just get entries where Peak1 is a promoter
+link_df <- link_df %>% subset(
+  Peak1_type == 'Promoter' &
+  Peak2_type != 'Promoter'
+)
+
+# distance between peak and target gene
+peak1_ranges <- Signac::StringToGRanges(link_df$Peak1, sep=c(':', '-'))
+peak2_ranges <- Signac::StringToGRanges(link_df$Peak2, sep=c(':', '-'))
+link_df$distance_bp <- abs(start(peak1_ranges) - start(peak2_ranges))
+peak1_ranges$Peak <- link_df$Peak1
+peak2_ranges$Peak <- link_df$Peak2
+
+# threshold for co-accessibility
+link_df_full <- link_df
+
+coaccess_thresh <- quantile(link_df_full$coaccess, 0.8)
+coaccess_thresh
+
+dim(link_df_full[link_df$coaccess >= coaccess_thresh,])
+
+link_df <- link_df_full[link_df$coaccess >= coaccess_thresh,]
+
+# save results
+write.csv(link_df, file=paste0(data_dir, cur_celltype, '_', cur_group, '_gl-cCREs.csv'), row.names=FALSE)
+write.csv(link_df_full, file=paste0(data_dir, cur_celltype, '_', cur_group ,'_full_link_table.csv'))
+
+
+```
+
+Correlation of enhancer-gene co-accessibility in Young & Old mice:
+
+```{r eval=FALSE}
+
+link_df_young <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/ODC_Young_full_link_table.csv')) %>% 
+  subset(Peak2_type != 'Exonic')
+link_df_old <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/ODC_Old_full_link_table.csv'))  %>% 
+  subset(Peak2_type != 'Exonic')
+
+# add column for the two peaks
+link_df_young$link <- paste0(link_df_young$Peak1, '_', link_df_young$Peak2)
+link_df_old$link <- paste0(link_df_old$Peak1, '_', link_df_old$Peak2)
+
+# add missing links to each
+missing_ad <- link_df_old$link[!(link_df_old$link %in% link_df_young$link)]
+missing_pid <- link_df_young$link[!(link_df_young$link %in% link_df_old$link)]
+link_df_young[missing_ad,] <- NA
+link_df_young[missing_ad,'link'] <- missing_ad
+link_df_young[missing_ad,'coaccess'] <- 0
+link_df_old[missing_pid,] <- NA
+link_df_old[missing_pid,'link'] <- missing_pid
+link_df_old[missing_pid,'coaccess'] <- 0
+
+# set rownames
+rownames(link_df_old) <- link_df_old$link
+rownames(link_df_young) <- link_df_young$link
+
+# re-order so they match
+link_df_old <- link_df_old[link_df_young$link,]
+all.equal(link_df_old$link, link_df_young$link)
+
+plot_df <- data.frame(
+  link = link_df_young$link,
+  coaccess_young = link_df_young$coaccess,
+  coaccess_old = link_df_old$coaccess
+)
+plot_df$Peak1 <- ifelse(is.na(link_df_old$Peak1), link_df_young$Peak1, link_df_old$Peak1)
+plot_df$Peak1_nearestGene <- ifelse(is.na(link_df_old$Peak1_nearestGene), link_df_young$Peak1_nearestGene, link_df_old$Peak1_nearestGene)
+
+plot_df$Peak2 <- ifelse(is.na(link_df_old$Peak2), link_df_young$Peak2, link_df_old$Peak2)
+plot_df$Peak2_type <- ifelse(is.na(link_df_old$Peak2_type), link_df_young$Peak2_type, link_df_old$Peak2_type)
+
+
+library(ggpubr)
+
+p <- plot_df %>%
+  ggplot(aes(x = coaccess_young, y = coaccess_old)) +
+  geom_hex(bins = 50) +
+  geom_abline(intercept=0, slope=1, linetype='dashed', color='black') +
+  scale_fill_gradientn(colors=rev(plasma(256)), trans="log") +
+  stat_cor(method='pearson') +
+  theme(
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.border = element_rect(colour = "black", fill=NA, size=1),
+    plot.title = element_text(hjust=0.5, face='bold')
+  ) +
+  xlab('Young coaccessibility') +
+  ylab('Old coaccessibility') +
+  coord_fixed() +
+  scale_x_continuous(limits=c(0,1), breaks=c(0,0.5,1)) +
+  scale_y_continuous(limits=c(0,1), breaks=c(0,0.5,1))
+  #guides(fill=guide_colorbar(ticks.colour = NA, ticks=NA, label=FALSE))
+
+pdf(paste0(fig_dir, 'coaccess_ODC_young_vs_old.pdf'), width=6,height=4)
+print(p)
+dev.off()
+
+
+
+```

@@ -1,0 +1,73 @@
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+library(monocle3)
+library(SeuratWrappers)
+theme_set(theme_cowplot())
+
+setwd("/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/ATAC")
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+# load atac data
+seurat_atac <- readRDS(paste0(data_dir, 'snATAC_processed_seurat.rds'))
+DefaultAssay(seurat_atac) <- 'peaks'
+seurat_rna <- readRDS(paste0(data_dir, 'snRNA_processed_seurat.rds'))
+
+integrated <- readRDS(paste0(data_dir, 'integrated_snATAC_snRNA.rds'))
+
+```
+
+
+
+Try Monocle3 on UMAP
+
+Similar code for each cell type just because some setting are slightly different
+
+```{r eval=FALSE}
+
+cur_celltype <- 'ODC'
+fig_dir <- paste0('figures/', cur_celltype); dir.create(fig_dir)
+
+subset.cells <- as.logical(grepl('ODC', integrated$Combined.Clusters) + grepl('OPC', integrated$Combined.Clusters) + grepl('NFOL', integrated$Combined.Clusters) )
+
+seurat_subset <- integrated[,colnames(integrated)[subset.cells]]
+DefaultAssay(seurat_subset) <- 'RNA'
+
+# process the CDS
+atac.cds <- as.cell_data_set(seurat_subset)
+atac.cds <- cluster_cells(cds=atac.cds)
+
+# learn graph for pseudotime
+atac.cds <- learn_graph(atac.cds, use_partition=TRUE)
+
+# get principal node & order cells
+principal_node <- get_earliest_principal_node(atac.cds, partition = 1)
+atac.cds <- order_cells(atac.cds,root_pr_nodes = principal_node)
+
+# save CDS object
+saveRDS(atac.cds, paste0(data_dir, cur_celltype, '_integrated_cds.rds'))
+
+seurat_subset$pseudotime <- atac.cds$Pseudotime
+
+# cut pseudotime trajectory into 10, 50, 100 bins:
+valid_pseudotime <- seurat_subset@meta.data %>% subset(pseudotime != Inf)
+
+bins_10 <- valid_pseudotime %>% .$pseudotime %>% Hmisc::cut2(g=10)
+bins_50 <- valid_pseudotime %>% .$pseudotime %>% Hmisc::cut2(g=50)
+bins_100 <- valid_pseudotime %>% .$pseudotime %>% Hmisc::cut2(g=100)
+
+seurat_subset$pseudotime_bins_10 <- bins_10[match(colnames(seurat_subset), rownames(valid_pseudotime))]
+seurat_subset$pseudotime_bins_50 <- bins_50[match(colnames(seurat_subset), rownames(valid_pseudotime))]
+seurat_subset$pseudotime_bins_100 <- bins_100[match(colnames(seurat_subset), rownames(valid_pseudotime))]
+
+# save Seurat object
+saveRDS(seurat_subset, paste0(data_dir, cur_celltype, '_integrated_seurat.rds'))
+
+```

@@ -20,22 +20,47 @@ fig_dir <- 'figures/'
 cur_celltype <- 'ODC'
 fig_dir <- paste0('figures/', cur_celltype); dir.create(fig_dir)
 
-seurat_obj <- readRDS(paste0(data_dir, cur_celltype, '_integrated_seurat.rds'))
+seurat_subset <- readRDS(paste0(data_dir, cur_celltype, '_integrated_seurat.rds'))
 
 ```
 
-## calculate trajectory DEGS (t-DEGs) using monocle3:
+Subset by age 
+
+Run the code blocks below separately for Young & Old 
+
+```{r eval=FALSE}
+
+# subset old/young:
+cur_group <- 'Young'
+# cur_group <- 'Old'
+
+subset.cells <- ((seurat_subset$Time.point == 'Naive' & seurat_subset$subcluster_name == 'OPC') |
+(seurat_subset$Time.point == 'Day.5' & seurat_subset$subcluster_name %in% c('OPC', 'NFOL')) |
+(seurat_subset$Time.point == 'Day.14' & seurat_subset$subcluster_name %in% c('MF-ODC', 'Int-ODC')) |
+(seurat_subset$Time.point == 'Day.30' & seurat_subset$subcluster_name == 'Mat-ODC')) &
+(seurat_subset$Group == cur_group)
+table(subset.cells)
+
+# subset the seurat obj
+seurat_subset <- seurat_subset[,subset.cells]
+
+# cut pseudotime into bins:
+seurat_subset <- BinPseudotime(seurat_subset, n_bins=c(10,50,100))
+
+```
+
+calculate trajectory DEGS (t-DEGs) 
 
 ```{r eval=FALSE}
 
 # make a new CDS with just the RNA-seq data in order to do t-DEGs:
-expr_matrix  <- GetAssayData(subset(seurat_obj, tech == 'rna'), assay='RNA', slot='data')
+expr_matrix  <- GetAssayData(subset(seurat_subset, tech == 'rna'), assay='RNA', slot='data')
 pseudotime_genes <- rownames(expr_matrix )[rowSums(expr_matrix )!=0]
 expr_matrix <- expr_matrix[pseudotime_genes,]
 
 cds_subset <- new_cell_data_set(
   expr_matrix,
-  cell_metadata=seurat_obj@meta.data %>% subset(tech == 'rna')
+  cell_metadata=seurat_subset@meta.data %>% subset(tech == 'rna')
 )
 
 # identify t-DEGs
@@ -49,7 +74,8 @@ tdegs <- fit_coefs %>% filter(term == "pseudotime" & q_value <= 0.05) %>%
       select(gene_id, term, q_value, estimate)
 
 # write t-degs table as a csv:
-write.csv(tdegs, file=paste0(data_dir, cur_celltype, '_tDEGs.csv'), quote=FALSE, row.names=FALSE)
+write.csv(tdegs, file=paste0(data_dir, cur_celltype, '_', cur_group, '_tDEGs.csv'), quote=FALSE, row.names=FALSE)
+
 
 ```
 
@@ -65,13 +91,13 @@ pseudotime_genes <- tdegs$gene_id
 
 # setup RVAE directory
 outdir = '/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/ATAC/RVAgene/RVAgene/data/'
-cur_name <- paste0(cur_celltype, '_RVAE')
+cur_name <- paste0(cur_celltype, '_', cur_group, '_RVAE')
 dir.create(paste0(outdir, cur_name))
 
 # average expression / pseudo-expression in pseudotime bins:
-Idents(seurat_obj) <- seurat_obj$pseudotime_bins_100
+Idents(seurat_subset) <- seurat_subset$pseudotime_bins_100
 average_exp <- AverageExpression(
-  seurat_obj %>% subset(tech == 'rna'),
+  seurat_subset %>% subset(tech == 'rna'),
   slot='data',
   assay='RNA',
   features=pseudotime_genes

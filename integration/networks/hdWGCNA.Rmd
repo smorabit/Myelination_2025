@@ -1,0 +1,1576 @@
+Load the Datasets 
+
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+library(ggrepel)
+library(ggpubr)
+library(monocle3)
+library(ggrastr)
+library(ArchR)
+library(patchwork)
+theme_set(theme_cowplot())
+set.seed(12345)
+setwd("/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC")
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(igraph)
+library(harmony)
+
+# set random seed for reproducibility
+set.seed(12345)
+
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+
+
+
+# scp R/* hpc3:/dfs7/swaruplab/smorabit/analysis/galilean/bin/
+scripts <- dir("/dfs7/swaruplab/smorabit/analysis/galilean/bin/")
+for(script in scripts){
+  source(paste0("/dfs7/swaruplab/smorabit/analysis/galilean/bin/", script))
+}
+
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+
+
+# set the current cell-type (oligos)
+cur_celltype <- 'ODC'
+fig_dir <- paste0('figures/', cur_celltype, '/'); dir.create(fig_dir)
+
+
+# set the working dir 
+setwd("/dfs7/swaruplab/smorabit/collab/AMRF/analysis/hdWGCNA/")
+fig_dir <- 'figures/'
+
+seurat_rna <- readRDS("/dfs7/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/snRNA_processed_seurat.rds")
+
+
+# load old & young t-degs
+o_tdegs <- read.csv('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/ODC_Old_tDEGs.csv')
+rownames(o_tdegs) <- o_tdegs$gene_id
+
+y_tdegs <- read.csv('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/ODC_Young_tDEGs.csv')
+rownames(y_tdegs) <- y_tdegs$gene_id
+
+```
+
+
+hdWGCNA in pseudo-bulk 
+
+```{r eval=FALSE}
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(igraph)
+library(harmony)
+
+# set random seed for reproducibility
+set.seed(12345)
+
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+
+# use trajectory-DEGs as input:
+features <- unique(c(y_tdegs$gene_id, o_tdegs$gene_id))
+
+seurat_rna <- SetupForWGCNA(
+    seurat_rna, 
+    features = features, 
+    gene_select = 'custom',
+    wgcna_name = "oligo"
+)
+features <- GetWGCNAGenes(seurat_rna)
+wgcna_name <- 'oligo'
+
+# compute pseudo-bulk replicates 
+datExpr <- hdWGCNA:::to_pseudobulk(
+    seurat_rna,
+    replicate_col = 'sample',
+    cell_type_col = 'pseudotime_bins_10',
+    label_col = 'Group.Time'
+)
+datExpr <- Reduce(cbind, lapply(names(datExpr), function(x){
+    cur <- datExpr[[x]]
+    colnames(cur) <- paste0(x, '_', colnames(cur))
+    cur
+}))
+datExpr <- t(datExpr[GetWGCNAGenes(seurat_rna),])
+dim(datExpr)
+
+# compute CPM:
+cpm <- t(apply(datExpr, 1, function(x){
+    y <- (x) / sum(x) * 1000000
+    log2(y + 1)
+}))
+
+# assign the pseudobulk expression for this group 
+seurat_rna@misc[[wgcna_name]]$datExpr <- cpm
+
+seurat_rna <- TestSoftPowers(seurat_rna)
+plot_list <- PlotSoftPowers(seurat_rna)
+
+# assemble with patchwork
+pdf(paste0(fig_dir, 'softpower.pdf'), width=12, height=8)
+print(wrap_plots(plot_list, ncol=2))
+dev.off()
+
+# construct wgcna network:
+seurat_rna <- ConstructNetwork(
+    seurat_rna,
+        minModuleSize=50,
+        mergeCutHeight=0.1,
+    tom_name='oligo',
+    overwrite_tom=TRUE
+)
+
+# plot the dendrogram
+pdf(paste0(fig_dir,"oligo_dendro.pdf"),height=3, width=6)
+print(PlotDendrogram(seurat_rna, wgcna_name='oligo', main='hdWGCNA Dendrogram'))
+dev.off()
+
+# Harmony gets sad if you don't give it a factor
+seurat_rna$snRNAseq.Batch <- as.factor(seurat_rna$snRNAseq.Batch)
+
+seurat_rna <- ModuleEigengenes(
+    seurat_rna,
+    group.by.vars="snRNAseq.Batch",
+)
+
+seurat_rna <- ModuleConnectivity(
+    seurat_rna
+)
+
+###################################################################################
+# Re-name and Re-color the modules
+###################################################################################
+
+seurat_rna <- ResetModuleNames(
+    seurat_rna,
+    new_name = 'M',
+    wgcna_name = 'oligo'
+)
+
+library(MetBrewer)
+
+modules <- GetModules(seurat_rna)
+mods <- levels(modules$module)
+mod_colors <- dplyr::select(modules, c(module, color)) %>%
+  distinct %>% arrange(module) %>% .$color
+n_colors <- length(mod_colors) - 1
+
+new_colors <- paste0(met.brewer("Cross", n=n_colors, type='continuous'))
+new_colors <- sample(new_colors, n_colors)
+
+seurat_rna <- ResetModuleColors(seurat_rna, new_colors)
+
+
+# rank the modules by their module pseudotime dynamics:
+wgcna_name <- 'oligo'
+pseudotime_col <- 'pseudotime'
+n_bins <- 50
+
+# get relevant module information
+MEs <- GetMEs(seurat_rna, wgcna_name=wgcna_name)
+modules <- GetModules(seurat_rna, wgcna_name=wgcna_name)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+module_colors <- modules %>% dplyr::select(c(module, color)) %>% dplyr::distinct()
+
+#rownames(module_colors) <- module_colors$module
+mod_colors <- module_colors$color; names(mod_colors) <- module_colors$module
+
+# merge the MEs with the seurat metadata
+plot_df <- cbind(seurat_rna@meta.data, MEs)
+
+print(head(plot_df))
+
+# loop through each pseudotime trajectory:
+avg_list <- list()
+for(ps_col in pseudotime_col){
+
+    ps_bin_name <- paste0(ps_col, '_bins_', n_bins)
+
+    # compute the average ME in each pseudotime bin
+    avg_scores <- plot_df %>%
+            group_by(get(ps_bin_name)) %>%
+            select(all_of(mods)) %>%
+            summarise_all(mean)
+
+    colnames(avg_scores)[1] <- 'bin'
+    avg_df <- reshape2::melt(avg_scores)
+    avg_df$bin <- as.numeric(avg_df$bin)
+    avg_df$group <- ps_col
+    avg_list[[ps_col]] <- avg_df
+}
+
+
+plot_df <- do.call(rbind, avg_list) %>% select(-group)
+plot_df <- plot_df %>% spread(bin, value)
+rownames(plot_df) <- plot_df$variable
+plot_df <- plot_df[,-1]
+plot_df <- as.matrix(plot_df)
+
+# scale between 0 & 1
+range01 <- function(x){
+  cur <- plot_df[x,]
+  (cur-min(cur))/(max(cur)-min(cur))
+}
+scaled <- lapply(rownames(plot_df), range01)
+scaled <- do.call(rbind, scaled)
+rownames(scaled) <- rownames(plot_df)
+
+
+# order rows by the time they reach 90% max expression
+exp_thresh <- 0.90
+ordering <- future_lapply(1:nrow(scaled), function(i){
+  match(names(scaled[i,])[scaled[i,] >= exp_thresh][1], colnames(scaled))
+})
+ordering <- unlist(ordering)
+ordered <- scaled[rownames(scaled)[order(ordering)],]
+
+ordered_modules <- rownames(ordered)
+names(ordered_modules) <- paste0('M', 1:length(ordered_modules))
+
+# reset the module levels
+modules <- GetModules(seurat_rna, 'oligo') 
+modules$module <- factor(as.character(modules$module), levels= c(as.character(ordered_modules), 'grey'))
+modules <- cbind(modules[,1:3], modules[,paste0('kME_', levels(modules$module))])
+seurat_rna <- SetModules(seurat_rna, modules)
+
+# reset again
+seurat_rna <- ResetModuleNames(
+    seurat_rna,
+    new_name = 'M',
+    wgcna_name = 'oligo'
+)
+
+
+################################################################################
+# featureplots
+################################################################################
+
+seurat_rna <- SetActiveWGCNA(seurat_rna, 'oligo')
+
+plot_list <- ModuleFeaturePlot(
+  seurat_rna,
+  features='hMEs', # plot the hMEs
+  reduction = 'seurat_obj_umap',
+  raster_dpi=250,
+  raster=TRUE,
+  order=TRUE # order so the points with highest hMEs are on top
+)
+
+pdf(paste0(fig_dir, 'oligo_module_featureplot_snRNA.pdf'), width=10, height=5)
+wrap_plots(plot_list, ncol=5)
+dev.off()
+
+################################################################################
+# Plot ME DotPlots
+################################################################################
+modules <- GetModules(seurat_rna)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+
+# module eigengene dotplot
+MEs <- GetMEs(seurat_rna)
+seurat_rna@meta.data <- cbind(seurat_rna@meta.data, MEs)
+
+# make dotplot
+p <- DotPlot(
+  seurat_rna,
+  group.by='pseudotime_bins_10',
+  features = rev(mods)
+) + coord_flip() + RotatedAxis() +
+  scale_color_gradient(high='black', low='grey95') + xlab('') + ylab('') +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.border = element_rect(colour = "black", fill=NA, size=1)
+  )
+
+pdf(paste0(fig_dir, 'Oligo_module_hMEs_dotplot2.pdf'), width=6, height=4)
+p
+dev.off()
+
+
+p <- PlotModuleTrajectory(
+  seurat_rna,
+  pseudotime_col = 'pseudotime'
+)
+
+pdf(paste0(fig_dir, 'Oligo_module_MEs_trajectory.pdf'), width=8, height=5)
+p
+dev.off()
+
+###################################################################################
+# Run enrichr with these modules
+##################################################################################
+
+library(enrichR)
+
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021','WikiPathway_2021_Human', 'KEGG_2021_Human')
+
+# compute GO terms:
+seurat_rna <- RunEnrichr(seurat_rna, dbs=dbs, max_genes=Inf, wgcna_name ='oligo')
+
+# inspect the enrichr table:
+enrichr_df <- GetEnrichrTable(seurat_rna) %>% subset(P.value < 0.05)
+enrichr_df$ngenes <- unlist(lapply(strsplit(enrichr_df$Genes, ';'), function(x){length(x)}))
+enrichr_df <- subset(enrichr_df, ngenes >= 3)
+
+write.table(enrichr_df, quote=FALSE, row.names=FALSE, sep='\t', file=paste0(data_dir, 'oligo_hdWGCNA_enrichr.tsv'))
+
+
+# plot selected GO terms as a bubble plot:
+
+
+# get module info and colors
+modules <- GetModules(seurat_rna)
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+color_df <- modules %>% subset(module!='grey') %>%
+  select(c(module, color)) %>% distinct 
+
+# plot selected GO terms
+combined_output <- GetEnrichrTable(seurat_rna)
+combined_output $ngenes <- unlist(lapply(strsplit(combined_output $Genes, ';'), function(x){length(x)}))
+combined_output <- subset(combined_output , ngenes >= 3)
+
+selected_terms <- read.delim('data/odc_modules_selected_terms.txt', sep='\t', header=1)
+
+# get rid of the OPC modules
+selected_terms <- selected_terms[!grepl('OPC', selected_terms$module),]
+
+# subset selected terms
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05 & ngenes > 2)
+
+
+selected_terms$group <- factor(as.character(selected_terms$module),levels = mods)
+selected_terms$module <- factor(as.character(selected_terms$module),levels = mods)
+
+# set max pval
+
+quantile(-log(selected_terms$P.value), 0.95)
+max_p <- 10
+
+selected_terms$logp <- -log(selected_terms$P.value)
+selected_terms$logp <- ifelse(selected_terms$logp > max_p, max_p, selected_terms$logp)
+
+# remove GO Term ID
+selected_terms$Term <- str_replace(selected_terms$Term, " \\s*\\([^\\)]+\\)", "")
+
+selected_terms <- selected_terms %>%
+  arrange(group)
+
+
+#selected_terms$wrap <- wrapText(selected_terms$Term, 35)
+
+selected_terms$Term <- factor(
+  as.character(selected_terms$Term),
+  levels = rev(unique(as.character(selected_terms$Term)))
+)
+
+# GO Term dot plot
+
+p <- selected_terms %>%
+  ggplot(aes(x = group, y = Term, color =logp, size=log(Combined.Score))) +
+  geom_point() +
+  scale_color_stepsn(colors=rev(magma(256))) +
+  RotatedAxis() + xlab('') + ylab('') +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    panel.grid = element_line(size=0.25, color='lightgrey')
+  )+ labs(
+    color = bquote("-log"[10]~"(P)"),
+    size= bquote("log"[10]~"(Enrich)")
+  )
+
+
+# # make the colorbar as its own heatmap
+color_df$var <- 1
+cp <- color_df$color; names(cp) <- color_df$module
+colorbar <- color_df %>%
+  subset(module %in% unique(selected_terms$group)) %>%
+  ggplot(aes(x=module, y=var, fill=module)) +
+  geom_tile() +
+  scale_fill_manual(values=cp) +
+  coord_equal() +
+  NoLegend() + RotatedAxis() +
+  theme(
+    plot.title=element_blank(),
+    axis.line=element_blank(),
+    axis.ticks.y =element_blank(),
+    axis.text.y = element_blank(),
+    axis.title = element_blank(),
+    plot.margin=margin(0,0,0,0),
+  )
+
+pdf(paste0(fig_dir, 'odc_selected_go_terms_bubbleplot.pdf'), width=7.3, height=7)
+p / colorbar
+dev.off()
+
+selected_terms <- selected_terms %>%
+  group_by(module) %>%
+  arrange(Combined.Score) %>% ungroup
+
+plot_list <- list()
+for(mod in mods){
+  cur_df <- subset(selected_terms, module == mod) %>% 
+    mutate(Term = droplevels(Term)) %>% 
+    arrange(Combined.Score)
+  cur_df$Term <- factor(as.character(cur_df$Term), levels=as.character(cur_df$Term))
+
+
+  p <- cur_df %>%
+    ggplot(aes(x=log(Combined.Score), y=Term, fill=module))+
+    geom_bar(stat='identity', position='identity') +
+    geom_text(aes(label=Term), x=.1, color='black', size=3.5, hjust='left') +
+    scale_fill_manual(values=cp) +
+    xlab('log(Enrichment)') +
+    scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) +
+    ggtitle(mod) +
+    theme(
+      panel.grid.major=element_blank(),
+      panel.grid.minor=element_blank(),
+      legend.title = element_blank(),
+      axis.ticks.y=element_blank(),
+      axis.text.y=element_blank(),
+      axis.line.y=element_blank(),
+      plot.title = element_text(hjust = 0.5, vjust=1),
+      axis.title.y = element_blank(),
+      plot.margin = margin(c(0,0,0,0))
+    ) + NoLegend()
+
+  plot_list[[mod]] <- p
+
+}
+
+pdf(paste0(fig_dir, 'odc_selected_go_terms_barplot.pdf'), width= 12, height=5, useDingbats=FALSE)
+wrap_plots(plot_list, ncol=5)
+dev.off()
+
+p <- selected_terms  %>%
+  ggplot(aes(x=log(Combined.Score), y=Term, fill=module))+
+  geom_bar(stat='identity', position='identity') +
+  geom_text(aes(label=Term), x=.1, color='black', size=3.5, hjust='left') +
+  scale_fill_manual(values=cp) +
+  xlab('log(Enrichment)') +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    legend.title = element_blank(),
+    axis.ticks.y=element_blank(),
+    axis.text.y=element_blank(),
+    axis.line.y=element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_blank()
+  )
+
+pdf(paste0(fig_dir, 'odc_selected_go_terms_barplot.pdf'), width= 12, height=4, useDingbats=FALSE)
+p + facet_wrap(~module, ncol=5, scales='free') + NoLegend()
+dev.off()
+
+saveRDS(seurat_rna, file=paste0(data_dir, 'oligo_snRNA_hdWGCNA.rds'))
+
+```
+
+
+DME testing to compare young vs old 
+
+```{r eval=FALSE}
+
+###################################################################################
+# test out code for DMEs
+##################################################################################
+
+bins <- levels(seurat_rna$pseudotime_bins_10)
+cur_bin <- bins[1]
+
+timepoints <- unique(as.character(seurat_rna$Time.point))
+
+DMEs <- data.frame()
+for(cur_tp in timepoints){
+  for(cur_bin in bins){
+
+    # get list of cells with these annotations / diagnosis
+    g1 <- seurat_rna@meta.data %>% subset(Group == 'Old' & Time.point == cur_tp & pseudotime_bins_10 == cur_bin) %>% rownames
+    g2 <- seurat_rna@meta.data %>% subset(Group == 'Young' & Time.point == cur_tp  & pseudotime_bins_10 == cur_bin) %>% rownames
+
+    # run the DME comparison with a wilcox test
+    cur_DMEs <- FindDMEs(
+        seurat_rna,
+        barcodes1 = g1,
+        barcodes2 = g2,
+        test.use='wilcox',
+        harmonized=TRUE,
+        pseudocount.use=0.001
+    )
+
+    cur_DMEs$ident.1 <- "Old"
+    cur_DMEs$ident.2 <- 'Young'
+    cur_DMEs$bin <- cur_bin
+    cur_DMEs$Time.point <- cur_tp
+    DMEs <- rbind(DMEs, cur_DMEs)
+
+  }
+}
+
+write.csv(DMEs, quote=FALSE, file=paste0(data_dir, 'Oligo_module_DMEs.csv'))
+
+maxval <- 1.5; minval <- -1.5
+plot_df <- DMEs
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC > maxval, maxval, plot_df$avg_log2FC)
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC < minval, minval, plot_df$avg_log2FC)
+
+plot_df$textcolor <- ifelse(plot_df$avg_log2FC < 0.5, 'black', 'white')
+plot_df$Significance <- gtools::stars.pval(plot_df$p_val_adj)
+
+modules <- GetModules(seurat_rna)
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+
+# set factor levels:
+plot_df$module <- factor(as.character(plot_df$module), levels=mods)
+plot_df$Time.point <- factor(as.character(plot_df$Time.point), levels=c('Naive', 'Day.5', 'Day.14', 'Day.30'))
+
+p <- plot_df %>% 
+  ggplot(aes(x=bin, y=fct_rev(module), fill=avg_log2FC)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, color=plot_df$textcolor) +
+  scale_fill_gradient2(low='seagreen', mid='grey95', high='darkorchid3') +
+  RotatedAxis() +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) + xlab('') + ylab('') 
+
+# Plot the result
+pdf(paste0(fig_dir, 'DME_heatmap.pdf'),height=8, width=4)
+p + facet_wrap(~Time.point, ncol=1)
+dev.off()
+
+```
+
+
+Run network analysis again on just the turquoise (M2) module in just the OPCs 
+
+```{r eval=FALSE}
+
+
+opc_genes <- modules %>% subset(module == 'M2') %>% .$gene_name %>% as.character
+
+wgcna_name <- 'opc'
+seurat_rna <- SetupForWGCNA(
+    seurat_rna, 
+    features = opc_genes, 
+    gene_select = 'custom',
+    wgcna_name = wgcna_name
+)
+
+# compute pseudo-bulk replicates 
+datExpr <- hdWGCNA:::to_pseudobulk(
+    seurat_rna,
+    replicate_col = 'sample',
+    cell_type_col = 'cell_type',
+    label_col = 'Group.Time'
+)
+datExpr <- Reduce(cbind, lapply(names(datExpr), function(x){
+    cur <- datExpr[[x]]
+    colnames(cur) <- paste0(x, '_', colnames(cur))
+    cur
+}))
+datExpr <- t(datExpr[GetWGCNAGenes(seurat_rna),])
+dim(datExpr)
+
+# compute CPM:
+cpm <- t(apply(datExpr, 1, function(x){
+    y <- (x) / sum(x) * 1000000
+    log2(y + 1)
+}))
+
+# susbet for just OPC and NFOL:
+cpm <- cpm[grepl('OPC', rownames(cpm)),]
+
+# assign the pseudobulk expression for this group 
+seurat_rna@misc[[wgcna_name]]$datExpr <- cpm
+
+seurat_rna <- TestSoftPowers(seurat_rna)
+plot_list <- PlotSoftPowers(seurat_rna)
+
+# assemble with patchwork
+pdf(paste0(fig_dir, 'opc_softpower.pdf'), width=12, height=8)
+print(wrap_plots(plot_list, ncol=2))
+dev.off()
+
+# construct wgcna network:
+seurat_rna <- ConstructNetwork(
+    seurat_rna,
+    #PamStage = T,
+      minModuleSize=50,
+      detectCutHeight=0.995,
+      mergeCutHeight=0.05,
+    tom_name='opc',
+    overwrite_tom=TRUE
+)
+
+# plot the dendrogram
+pdf(paste0(fig_dir,"opc_dendro.pdf"),height=3, width=6)
+print(PlotDendrogram(seurat_rna, wgcna_name='opc', main='hdWGCNA Dendrogram'))
+dev.off()
+
+GetModules(seurat_rna) %>% .$module %>% table
+
+
+seurat_rna <- ModuleEigengenes(
+    seurat_rna,
+    group.by.vars="snRNAseq.Batch",
+)
+
+seurat_rna <- ModuleConnectivity(
+    seurat_rna,
+    group.by = 'cell_type',
+    group_name = 'OPC'
+)
+
+###################################################################################
+# Re-name and Re-color the modules
+# TODO: they should be numbered based on their pseudotime. For example, M1 and M2 are up in OPCs 
+##################################################################################
+
+seurat_rna <- ResetModuleNames(
+    seurat_rna,
+    new_name = 'OPC-M',
+    wgcna_name = 'opc'
+)
+
+
+library(MetBrewer)
+
+modules <- GetModules(seurat_rna)
+mods <- levels(modules$module)
+mod_colors <- dplyr::select(modules, c(module, color)) %>%
+  distinct %>% arrange(module) %>% .$color
+n_colors <- length(mod_colors) - 1
+
+new_colors <- paste0(met.brewer("Signac", n=n_colors, type='continuous'))
+new_colors <- sample(new_colors, n_colors)
+
+seurat_rna <- ResetModuleColors(seurat_rna, new_colors)
+
+
+################################################################################
+# featureplot
+################################################################################
+
+
+plot_list <- ModuleFeaturePlot(
+  seurat_opc,
+  features='hMEs', # plot the hMEs
+  reduction = 'seurat_obj_umap',
+  raster_dpi=200,
+  order=TRUE # order so the points with highest hMEs are on top
+)
+
+pdf(paste0(fig_dir, 'opcmodule_featureplot_snRNA.pdf'), width=10, height=9)
+wrap_plots(plot_list, ncol=4)
+dev.off()
+
+
+p <- PlotModuleTrajectory(
+  seurat_rna,
+  pseudotime_col = 'pseudotime',
+  ncol=5
+)
+
+pdf(paste0(fig_dir, 'opc_module_MEs_trajectory.pdf'), width=10, height=5)
+p
+dev.off()
+
+###################################################################################
+# Run enrichr with these modules
+##################################################################################
+
+modules <- GetModules(seurat_rna, wgcna_name = 'opc')
+table(modules$module)
+
+library(enrichR)
+
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021','WikiPathway_2021_Human', 'KEGG_2021_Human')
+
+# compute GO terms: 
+seurat_rna <- RunEnrichr(seurat_rna, dbs=dbs, max_genes=Inf, wgcna_name='opc')
+
+# inspect the enrichr table:
+enrichr_df <- GetEnrichrTable(seurat_rna, wgcna_name='opc') %>% subset(P.value < 0.05)
+enrichr_df$ngenes <- unlist(lapply(strsplit(enrichr_df$Genes, ';'), function(x){length(x)}))
+# enrichr_df <- subset(enrichr_df, ngenes >= 3)
+
+write.table(enrichr_df, quote=FALSE, row.names=FALSE, sep='\t', file=paste0(data_dir, 'opc_hdWGCNA_enrichr.tsv'))
+
+#enrichr_df <- GetEnrichrTable(seurat_rna)
+tmp1 <- subset(enrichr_df, module == 'OPC-M11')
+tmp2 <- subset(enrichr_df, module == 'OPC-M12')
+tmp2 <- subset(enrichr_df, module == 'OPC-M2')
+
+dim(tmp1)
+dim(tmp2)
+
+modules <- GetModules(seurat_rna) 
+
+tmp1_genes <- unique(unlist(sapply(tmp1$Genes, function(x){unlist(strsplit(x, ';')[[1]])})))
+tmp1_genes <- stringr::str_to_title(tmp1_genes)
+
+tmp2_genes <- unique(unlist(sapply(tmp2$Genes, function(x){unlist(strsplit(x, ';')[[1]])})))
+tmp2_genes <- stringr::str_to_title(tmp2_genes)
+
+
+subset(modules, gene_name %in% tmp2_genes) %>% .$module
+
+all.equal(tmp1, tmp2)
+
+
+
+
+# get module info and colors
+modules <- GetModules(seurat_rna, wgcna_name='opc')
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+color_df <- modules %>% subset(module!='grey') %>%
+  select(c(module, color)) %>% distinct 
+
+# plot selected GO terms
+combined_output <- GetEnrichrTable(seurat_rna, wgcna_name='opc')
+#combined_output $ngenes <- unlist(lapply(strsplit(combined_output $Genes, ';'), function(x){length(x)}))
+#combined_output <- subset(combined_output , ngenes >= 3)
+
+selected_terms <- read.delim('data/odc_modules_selected_terms.txt', sep='\t', header=1)
+
+# get rid of the OPC modules
+selected_terms <- selected_terms[grepl('OPC', selected_terms$module),]
+
+# subset selected terms
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05)
+
+
+selected_terms$group <- factor(
+  as.character(selected_terms$module),
+  levels = mods
+)
+
+# set max pval
+
+quantile(-log(selected_terms$P.value), 0.95)
+max_p <- 10
+
+selected_terms$logp <- -log(selected_terms$P.value)
+selected_terms$logp <- ifelse(selected_terms$logp > max_p, max_p, selected_terms$logp)
+
+# remove GO Term ID
+selected_terms$Term <- str_replace(selected_terms$Term, " \\s*\\([^\\)]+\\)", "")
+
+selected_terms <- selected_terms %>%
+  arrange(group)
+
+
+#selected_terms$wrap <- wrapText(selected_terms$Term, 35)
+
+selected_terms$Term <- factor(
+  as.character(selected_terms$Term),
+  levels = rev(unique(as.character(selected_terms$Term)))
+)
+
+# GO Term dot plot
+
+p <- selected_terms %>%
+  ggplot(aes(x = group, y = Term, color =logp, size=log(Combined.Score))) +
+  geom_point() +
+  scale_color_stepsn(colors=rev(magma(256))) +
+  RotatedAxis() + xlab('') + ylab('') +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    panel.grid = element_line(size=0.25, color='lightgrey')
+  )+ labs(
+    color = bquote("-log"[10]~"(P)"),
+    size= bquote("log"[10]~"(Enrich)")
+  )
+
+
+# # make the colorbar as its own heatmap
+color_df$var <- 1
+cp <- color_df$color; names(cp) <- color_df$module
+colorbar <- color_df %>%
+  subset(module %in% unique(selected_terms$group)) %>%
+  ggplot(aes(x=module, y=var, fill=module)) +
+  geom_tile() +
+  scale_fill_manual(values=cp) +
+  coord_equal() +
+  NoLegend() + RotatedAxis() +
+  theme(
+    plot.title=element_blank(),
+    axis.line=element_blank(),
+    axis.ticks.y =element_blank(),
+    axis.text.y = element_blank(),
+    axis.title = element_blank(),
+    plot.margin=margin(0,0,0,0),
+  )
+
+pdf(paste0(fig_dir, 'opc_selected_go_terms_bubbleplot.pdf'), width=9, height=7)
+p / colorbar
+dev.off()
+
+###################################################################################
+# Save the results
+##################################################################################
+
+saveRDS(seurat_rna, file=paste0(data_dir, 'oligo_snRNA_hdWGCNA.rds'))
+
+```
+
+
+
+Module network plots 
+
+```{r eval=FALSE}
+
+
+library(igraph)
+library(tidygraph)
+library(ggraph)
+
+
+#---------------------------------------------------------#
+# Hub gene network plots (CUSTOM)
+#---------------------------------------------------------#
+
+n_hubs <- 25 
+n_edges <- n_hubs * 10
+edge_prop <- 0.1
+
+cur_net <- 'oligo'
+cur_net <- 'opc'
+
+for(cur_net in c('oligo', 'opc')){
+
+  dir.create(paste0(fig_dir, cur_net, '/hubgene_networks/'))
+
+  seurat_rna <- SetActiveWGCNA(seurat_rna, wgcna_name = cur_net)
+  modules <- GetModules(seurat_rna) %>% subset(module != 'grey') %>% mutate(module = droplevels(module))
+
+  # get module colors for plotting 
+  mods <- levels(modules$module)
+  mod_colors <- dplyr::select(modules, c(module, color)) %>% distinct()
+  mod_cp <- mod_colors$color; names(mod_cp) <- as.character(mod_colors$module)
+
+  # load the TOM:
+  TOM <- GetTOM(seurat_rna, wgcna_name = cur_net)
+
+  plot_list <- list()
+
+
+  for(cur_mod in mods){
+
+    print(cur_mod)
+
+
+    cur_genes <- subset(modules, module == cur_mod) %>% .$gene_name
+
+    hub_df <- GetHubGenes(seurat_rna, n_hubs=n_hubs) %>% subset(module == cur_mod)
+    rownames(hub_df) <- hub_df$gene_name
+    cur_hub_genes <- hub_df$gene_name
+
+    cur_TOM <- TOM[cur_hub_genes, cur_hub_genes]
+    cur_TOM[lower.tri(cur_TOM)] <- 0 
+
+    cur_TOM_df <- reshape2::melt(cur_TOM) %>% 
+      dplyr::rename(gene1 = Var1, gene2 = Var2, weight=value) %>%
+      subset(gene1 != gene2) %>% 
+      arrange(desc(weight)) %>% 
+      slice_max(order_by = weight, n = n_edges)
+
+    graph <- cur_TOM_df %>%
+        igraph::graph_from_data_frame() %>%
+        tidygraph::as_tbl_graph(directed=FALSE) %>% 
+        tidygraph::activate(nodes)
+
+
+    V(graph)$kME <- hub_df[V(graph)$name, 'kME']
+    V(graph)$module <- modules[V(graph)$name,'module']
+
+    lay <- ggraph::create_layout(graph, layout_nicely(graph))
+    lay <- ggraph::create_layout(graph, layout_with_graphopt(graph))
+
+    p <- ggraph(lay) + 
+      ggrastr::rasterise(
+        geom_edge_link(aes(alpha=scale01(weight), color=scale01(weight)), linewidth=0.5),
+        dpi=400) + 
+      geom_node_point(
+        aes(fill=module, size=kME), color='black', shape=21
+      ) +
+      scale_colour_manual(values=mod_cp) +
+      scale_fill_manual(values=mod_cp) +
+      scale_edge_colour_gradient2(high=as.character(mod_cp[cur_mod]), low='lightgrey') +
+      geom_node_label(aes(label=name), repel=TRUE, max.overlaps=Inf, fontface='italic') +
+      NoLegend() + 
+      ggtitle(paste0(cur_mod)) + 
+      theme(
+        plot.title = element_text(hjust=0.5),
+        panel.border = element_rect(size=1, fill=NA, color='black')
+
+      )
+
+    pdf(paste0(fig_dir, cur_net, '/hubgene_networks/', cur_mod, '_hubgene_network.pdf'), width=5, height=5)
+    print(p) 
+    dev.off()
+
+    plot_list[[cur_mod]] <- p
+
+  }
+
+  patch <- patchwork::wrap_plots(plot_list, ncol=4)
+  n_rows <- ceiling(length(mods) / 4)
+  w <- 4.5 * 4
+  h <- 4.5 * n_rows
+
+    pdf(paste0(fig_dir, cur_net, '/hubgene_networks/', cur_net, '_combined_hubgene_network.pdf'), width=w, height=h)
+    print(patch) 
+    dev.off()
+
+}
+
+```
+
+Project the Oligo modules into the snATAC dataset 
+
+```{r eval=FALSE}
+
+DefaultAssay(seurat_atac) <- 'GeneActivity'
+
+modules <- GetModules(seurat_rna, 'oligo')
+modules <- subset(modules, gene_name %in% rownames(seurat_atac)) 
+
+
+seurat_atac <- ScaleData(seurat_atac, features=rownames(seurat_atac)[1:50])
+seurat_atac <- ProjectModules(
+  seurat_obj = seurat_atac,
+  modules = modules,
+  seurat_ref = NULL,
+  group.by.vars = 'Batch',
+  wgcna_name_proj = 'oligo',
+  wgcna_name = 'None'
+)
+
+saveRDS(seurat_atac, file=paste0(data_dir, 'oligo_snATAC_hdWGCNA.rds'))
+
+
+
+plot_list <- ModuleFeaturePlot(
+  seurat_atac,
+  features='hMEs', # plot the hMEs
+  reduction = 'seurat_obj_umap',
+  raster_dpi=400,
+  raster=TRUE,
+  order=TRUE # order so the points with highest hMEs are on top
+)
+
+
+pdf(paste0(fig_dir, 'oligo_module_featureplot_snATAC_new.pdf'), width=10, height=5)
+wrap_plots(plot_list, ncol=5)
+dev.off()
+
+
+# plot module trajectory 
+p <- PlotModuleTrajectory(
+  seurat_atac,
+  pseudotime_col = 'pseudotime'
+)
+
+pdf(paste0(fig_dir, 'Oligo_module_MEs_trajectory_snATAC.pdf'), width=8, height=5)
+p
+dev.off()
+
+
+
+################################################################################
+# Project the OPC modules into the ATAC dataset 
+################################################################################
+
+seurat_opc_atac <- subset(seurat_atac, Cell.Type == 'OPC')
+
+modules <- GetModules(seurat_opc, 'opc')
+modules <- subset(modules, gene_name %in% rownames(seurat_opc_atac)) 
+
+seurat_opc_atac <- ScaleData(seurat_opc_atac, features=rownames(seurat_opc_atac)[1:50])
+seurat_opc_atac <- ProjectModules(
+  seurat_obj = seurat_opc_atac,
+  modules = modules,
+  seurat_ref = NULL,
+  group.by.vars = 'Batch',
+  wgcna_name_proj = 'opc',
+  wgcna_name = 'None'
+)
+
+saveRDS(seurat_opc_atac, file=paste0(data_dir, 'opc_snATAC_hdWGCNA.rds'))
+
+plot_list <- ModuleFeaturePlot(
+  seurat_opc_atac,
+  features='hMEs', # plot the hMEs
+  reduction = 'seurat_obj_umap',
+  raster_dpi=200,
+  order=TRUE # order so the points with highest hMEs are on top
+)
+
+pdf(paste0(fig_dir, 'opc_module_featureplot_snATAC.pdf'), width=10, height=9)
+wrap_plots(plot_list, ncol=4)
+dev.off()
+
+```
+
+RNA + ATAC module trajectories 
+
+
+```{r eval=FALSE}
+
+cur_group <- 'Old'
+cur_group <- 'Young'
+cur_group <- 'Both'
+
+# get relevant module information
+MEs <- GetMEs(seurat_rna)
+modules <- GetModules(seurat_rna, wgcna_name=wgcna_name)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+module_colors <- modules %>% dplyr::select(c(module, color)) %>% dplyr::distinct()
+
+#rownames(module_colors) <- module_colors$module
+mod_colors <- module_colors$color; names(mod_colors) <- module_colors$module
+
+# merge the MEs with the seurat metadata
+plot_df <- cbind(seurat_rna@meta.data, MEs)
+#plot_df <- subset(plot_df, Group == cur_group)
+
+pseudotime_col <- 'pseudotime'
+n_bins <- 50
+
+# loop through each pseudotime trajectory:
+avg_list <- list()
+for(ps_col in pseudotime_col){
+
+    ps_bin_name <- paste0(ps_col, '_bins_', n_bins)
+
+    # compute the average ME in each pseudotime bin
+    avg_scores <- plot_df %>%
+            group_by(get(ps_bin_name)) %>%
+            select(all_of(mods)) %>%
+            summarise_all(mean)
+
+    colnames(avg_scores)[1] <- 'bin'
+    avg_df <- reshape2::melt(avg_scores)
+    avg_df$bin <- as.numeric(avg_df$bin)
+    avg_df$group <- ps_col
+    avg_list[[ps_col]] <- avg_df
+}
+
+plot_df_rna <- do.call(rbind, avg_list)
+plot_df_rna$tech <- 'RNA'
+
+# get relevant module information
+MEs <- GetMEs(seurat_atac)
+modules <- GetModules(seurat_atac, wgcna_name=wgcna_name)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+module_colors <- modules %>% dplyr::select(c(module, color)) %>% dplyr::distinct()
+
+#rownames(module_colors) <- module_colors$module
+mod_colors <- module_colors$color; names(mod_colors) <- module_colors$module
+
+# merge the MEs with the seurat metadata
+plot_df <- cbind(seurat_atac@meta.data, MEs)
+#plot_df <- subset(plot_df, Group == cur_group)
+
+# loop through each pseudotime trajectory:
+avg_list <- list()
+for(ps_col in pseudotime_col){
+
+    ps_bin_name <- paste0(ps_col, '_bins_', n_bins)
+
+    # compute the average ME in each pseudotime bin
+    avg_scores <- plot_df %>%
+            group_by(get(ps_bin_name)) %>%
+            select(all_of(mods)) %>%
+            summarise_all(mean)
+
+    colnames(avg_scores)[1] <- 'bin'
+    avg_df <- reshape2::melt(avg_scores)
+    avg_df$bin <- as.numeric(avg_df$bin)
+    avg_df$group <- ps_col
+    avg_list[[ps_col]] <- avg_df
+}
+
+plot_df_atac <- do.call(rbind, avg_list)
+plot_df_atac$tech <- 'ATAC'
+
+# combine rna & atac dfs 
+plot_df <- rbind(plot_df_rna, plot_df_atac)
+
+# standard scaling 
+plot_df %<>% group_by(variable, tech) %>% 
+  mutate(scaled = (value - mean(value)) / sd(value)) %>% ungroup
+
+# correlations in each group between ATAC & RNA 
+cor_df <- data.frame()
+for(mod in mods){
+  cur_df <- subset(plot_df, variable == mod) %>% mutate(bin = as.numeric(bin))
+
+  cur_df_rna <- subset(cur_df, tech == 'RNA')
+  cur_df_atac <- subset(cur_df, tech == 'ATAC')
+
+  test <- cor.test(cur_df_rna$scaled, cur_df_atac$scaled)
+
+  cur_cor_df <- data.frame(
+    pval = as.numeric(test$p.value),
+    cor = as.numeric(test$estimate),
+    module = mod
+  )
+  cor_df <- rbind(cor_df, cur_cor_df)
+
+}
+
+p <- ggplot(
+    plot_df,
+    aes(x = as.numeric(bin), y=scaled, color=tech)
+) + 
+# geom_point(size=1) + 
+geom_smooth(size=1, se=FALSE, alpha=0.2) + 
+geom_hline(yintercept=0, linetype='dashed', color='grey') +
+scale_color_manual(values=c('dodgerblue', 'navy')) +
+#scale_fill_manual(values=mod_colors) +
+xlab('Pseudotime') + 
+ylab('Module Eigengene') + 
+theme(
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.border = element_rect(size=1, fill=NA, color='black')
+) 
+
+# assemble with patchwork
+patch <- p + facet_wrap(~variable, ncol=5, scales='free')
+
+pdf(paste0(fig_dir, 'Oligo_module_MEs_trajectory_tech_', cur_group, '.pdf'), width=10, height=3)
+patch
+dev.off()
+
+```
+
+snATAC coverageplots of selected module hub genes 
+
+```{r eval=FALSE}
+
+################################################################################
+# First need to load and format the gene-enhacner link tables
+################################################################################
+
+link_df_young <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/ODC_Young_full_link_table.csv')) %>% 
+  subset(Peak2_type != 'Exonic')
+link_df_old <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/ODC_Old_full_link_table.csv'))  %>% 
+  subset(Peak2_type != 'Exonic')
+
+# add column for the two peaks
+link_df_young$link <- paste0(link_df_young$Peak1, '_', link_df_young$Peak2)
+link_df_old$link <- paste0(link_df_old$Peak1, '_', link_df_old$Peak2)
+
+# add missing links to each
+missing_ad <- link_df_old$link[!(link_df_old$link %in% link_df_young$link)]
+missing_pid <- link_df_young$link[!(link_df_young$link %in% link_df_old$link)]
+link_df_young[missing_ad,] <- NA
+link_df_young[missing_ad,'link'] <- missing_ad
+link_df_young[missing_ad,'coaccess'] <- 0
+link_df_old[missing_pid,] <- NA
+link_df_old[missing_pid,'link'] <- missing_pid
+link_df_old[missing_pid,'coaccess'] <- 0
+
+# set rownames
+rownames(link_df_old) <- link_df_old$link
+rownames(link_df_young) <- link_df_young$link
+
+# re-order so they match
+link_df_old <- link_df_old[link_df_young$link,]
+all.equal(link_df_old$link, link_df_young$link)
+
+plot_df <- data.frame(
+  link = link_df_young$link,
+  coaccess_young = link_df_young$coaccess,
+  coaccess_old = link_df_old$coaccess
+)
+plot_df$Peak1 <- ifelse(is.na(link_df_old$Peak1), link_df_young$Peak1, link_df_old$Peak1)
+plot_df$Peak1_nearestGene <- ifelse(is.na(link_df_old$Peak1_nearestGene), link_df_young$Peak1_nearestGene, link_df_old$Peak1_nearestGene)
+
+plot_df$Peak2 <- ifelse(is.na(link_df_old$Peak2), link_df_young$Peak2, link_df_old$Peak2)
+plot_df$Peak2_type <- ifelse(is.na(link_df_old$Peak2_type), link_df_young$Peak2_type, link_df_old$Peak2_type)
+
+link_df <- plot_df
+link_df$chr <- do.call(rbind, strsplit(link_df$Peak1, '-'))[,1]
+
+# compute Old - Young delta:
+link_df$delta <- link_df$coaccess_old - link_df$coaccess_young
+
+# distance between peak and target gene
+peak1_ranges <- Signac::StringToGRanges(link_df$Peak1, sep=c('-', '-'))
+peak2_ranges <- Signac::StringToGRanges(link_df$Peak2, sep=c('-', '-'))
+peak1_ranges$Peak <- link_df$Peak1
+peak2_ranges$Peak <- link_df$Peak2
+
+library(ggpubr)
+
+p <- plot_df %>%
+  ggplot(aes(x = coaccess_young, y = coaccess_old)) +
+  geom_hex(bins = 50) +
+  geom_abline(intercept=0, slope=1, linetype='dashed', color='black') +
+  scale_fill_gradientn(colors=rev(viridis::mako(256)), trans="log") +
+  stat_cor(method='pearson') +
+  theme(
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.border = element_rect(colour = "black", fill=NA, size=1),
+    plot.title = element_text(hjust=0.5, face='bold')
+  ) +
+  xlab('Young coaccessibility') +
+  ylab('Old coaccessibility') +
+  coord_fixed() +
+  scale_x_continuous(limits=c(0,1), breaks=c(0,0.5,1)) +
+  scale_y_continuous(limits=c(0,1), breaks=c(0,0.5,1))
+  #guides(fill=guide_colorbar(ticks.colour = NA, ticks=NA, label=FALSE))
+
+pdf(paste0(fig_dir, 'coaccess_ODC_young_vs_old.pdf'), width=6,height=4)
+print(p)
+dev.off()
+
+################################################################################
+# Plot coverageplots
+# need to run above section first
+################################################################################
+
+# reset the assay 
+DefaultAssay(seurat_atac) <- 'peaks'
+
+# select a gene to plot 
+cur_gene <- 'Klk6'
+cur_gene <- 'Sox5'
+
+top_links_old %>% subset(Peak1_nearestGene == cur_gene)
+top_links_young %>% subset(Peak1_nearestGene == cur_gene)
+
+# get links to the gene of interest:
+plot_conns <- subset(link_df, Peak1_nearestGene == cur_gene) %>%
+  dplyr::select(c(Peak1, Peak2, delta)) %>%
+  dplyr::rename(c(coaccess=delta))
+
+# specify if it's higher in young or old
+plot_conns$direction <- sign(plot_conns$coaccess)
+plot_conns$direction <- ifelse(plot_conns$direction == -1, 'Young', 'Old')
+plot_conns$coaccess <- abs(plot_conns$coaccess)
+
+# number of basepairs to add to either side of the plotting region
+buffer_bp <- 500
+
+# get the plotting region based on selected links
+cur_peak1 <- subset(peak1_ranges, Peak %in% plot_conns$Peak1)
+cur_peak2 <- subset(peak2_ranges, Peak %in% plot_conns$Peak2)
+cur_peaks <- c(cur_peak1, cur_peak2)
+cur_start <- min(start(cur_peaks)) - buffer_bp
+cur_end <- max(end(cur_peaks)) + buffer_bp
+cur_chr <- as.character(unique(seqnames(cur_peaks)))
+plot_region <- paste0(cur_chr, '-', cur_start, '-', cur_end)
+
+print(plot_region)
+
+# region length
+print(cur_end - cur_start)
+
+# convert conns to links:
+plot_links_old <- Signac::ConnectionsToLinks(
+  conns=subset(plot_conns, direction=='Old')
+)
+
+plot_links_young <- Signac::ConnectionsToLinks(
+  conns=subset(plot_conns, direction=='Young')
+)
+
+
+# old coverage plot
+pcov_o <- CoveragePlot(
+  object = subset(seurat_atac, Group == 'Old'),
+  group.by='pseudotime_bins_10',
+  region = plot_region,
+  annotation = FALSE, peaks = FALSE, tile = FALSE, links = FALSE
+)
+pcov_o <- pcov_o + scale_fill_manual(values=plasma(10))
+
+# young coverage plot
+pcov_y <- CoveragePlot(
+  object = subset(seurat_atac, Group == 'Young'),
+  group.by='pseudotime_bins_10',
+  region = plot_region,
+  annotation = FALSE, peaks = FALSE, tile = FALSE, links = FALSE
+)
+pcov_y <- pcov_y + scale_fill_manual(values=plasma(10))
+
+# gene annotations
+p2 <- AnnotationPlot(seurat_atac, region=plot_region)
+
+p_old <- CustomLinkPlot(
+  seurat_celltype,
+  region = plot_region,
+  links = plot_links_old,
+  negative = FALSE,
+  ymax = NULL,
+  color_low = 'darkorchid3', color_mid = 'darkorchid3', color_high = 'darkorchid3'
+  #color_low = 'seagreen', color_mid = 'lightgrey', color_high = 'darkorchid3'
+) + NoLegend() + ylab('Old links') +
+  theme(plot.margin=margin(0,0,0,0))
+
+p_young <- CustomLinkPlot(
+  seurat_celltype,
+  region = plot_region,
+  links = plot_links_young,
+  negative = FALSE,
+  ymax = NULL,
+  color_low = 'seagreen', color_mid = 'seagreen', color_high = 'seagreen'
+  #color_low = 'seagreen', color_mid = 'lightgrey', color_high = 'darkorchid3'
+) + NoLegend() + ylab('Young links') +
+  theme(plot.margin=margin(0,0,0,0))
+
+p_old_combined <- CombineTracks(
+  plotlist=list(p_old, pcov_o, p2),
+  heights=c(2,6,2)
+)
+
+p_young_combined <- CombineTracks(
+  plotlist=list(p_young, pcov_y, p2),
+  heights=c(2,6,2)
+)
+
+pdf(paste0(fig_dir,"CoveragePlot_", cur_gene,".pdf"), width=10, height=6)
+p_old_combined | p_young_combined
+dev.off()
+
+
+
+# zoomed in coverage plot on just the gene of interest:
+
+cur_promoters <- subset(peakset, nearestGene == cur_gene & peakType == 'Promoter')
+promoter_ranges <- Signac::StringToGRanges(cur_promoters$peak, sep=c('-', '-')) %>%
+  Extend(upstream=buffer_bp, downstream=buffer_bp)
+
+plot_region_zoom <- paste(cur_chr, min(start(promoter_ranges)),max(end(promoter_ranges)), sep='-')
+
+
+
+pcov_y_zoom <- CoveragePlot(
+  object = subset(seurat_atac, Group == 'Young'),
+  group.by='pseudotime_bins_10',
+  region=plot_region_zoom,
+  annotation = FALSE, peaks = FALSE, tile = FALSE, links = FALSE
+) + scale_fill_manual(values=plasma(10))
+
+pcov_o_zoom <- CoveragePlot(
+  object = subset(seurat_atac, Group == 'Old'),
+  group.by='pseudotime_bins_10',
+  region=plot_region_zoom,
+  annotation = FALSE, peaks = FALSE, tile = FALSE, links = FALSE
+) + scale_fill_manual(values=plasma(10))
+
+
+pdf(paste0(fig_dir,"CoveragePlot_", cur_gene,"_zoom.pdf"), width=6, height=6)
+pcov_o_zoom | pcov_y_zoom
+dev.off()
+
+
+```
+
+Gene set Overlap of t-DEGs from young & old in each of the modules
+
+```{r eval=FALSE}
+
+library(GeneOverlap)
+
+modules <- GetModules(seurat_rna, wgcna_name='oligo')
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+
+# set size for gene overlap
+genome.size <- length(union(y_tdegs$gene_id, o_tdegs$gene_id))
+
+cur_overlap <- testGeneOverlap(newGeneOverlap(
+    y_tdegs$gene_id,
+    o_tdegs$gene_id,
+    genome.size=genome.size
+))
+
+overlap_df <- data.frame()
+plot_df <- data.frame()
+for(cur_mod in mods){
+  print(cur_mod)
+  cur_mod_genes <- subset(modules, module == cur_mod) %>% .$gene
+
+  cur_y_tdegs <- subset(y_tdegs, gene_id %in% cur_mod_genes) %>% .$gene_id
+  cur_o_tdegs <- subset(o_tdegs, gene_id %in% cur_mod_genes)  %>% .$gene_id
+
+  y_only <- setdiff(cur_y_tdegs, cur_o_tdegs)
+  o_only <- setdiff(cur_o_tdegs, cur_y_tdegs)
+  shared <- intersect(cur_o_tdegs, cur_y_tdegs)
+
+  cur_overlap <- testGeneOverlap(newGeneOverlap(
+      cur_y_tdegs,
+      cur_o_tdegs,
+      genome.size=genome.size
+  ))
+
+  cur_overlap <- data.frame(
+    'odds.ratio' = c(cur_overlap@odds.ratio),
+    'pval' = c(cur_overlap@pval),
+    'Jaccard' = c(cur_overlap@Jaccard),
+    'size_intersection' = c(length(cur_overlap@intersection)),
+    'module' = cur_mod
+  )
+  overlap_df <- rbind(overlap_df, cur_overlap)
+
+  cur_df <- data.frame(
+    n = c(length(y_only), length(shared), length(o_only)),
+    group = c('Young', 'Shared', 'Old'),
+    module = cur_mod
+  )
+  cur_df$percentage <- cur_df$n / sum(cur_df$n)
+  plot_df <- rbind(plot_df, cur_df)
+
+}
+overlap_df$fdr <- p.adjust(overlap_df$pval, method='fdr')
+overlap_df$shape <- ifelse(overlap_df$fdr < 0.05, 21, 4)
+
+# order of modules
+plot_df$module <- factor(as.character(plot_df$module), levels=mods)
+overlap_df$module <- factor(as.character(overlap_df$module), levels=mods)
+
+
+p1 <- plot_df %>%
+  ggplot(aes(x = percentage, y=fct_rev(module), fill=group)) + 
+  geom_bar(position='stack', stat='identity') + 
+  # scale_fill_manual(values=amylo_cp) + 
+  geom_text(aes(label=abs(n)), position = position_stack(vjust=0.5)) +
+  #xlim(-plot_max, plot_max) +
+#  scale_x_continuous(expand = c(0, 0), limits = c(-plot_max, plot_max)) + 
+  theme(
+    axis.line.y = element_blank(),
+    axis.title.y = element_blank()
+  ) + 
+  xlab("Proportion") + NoLegend() + 
+   scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) 
+  #facet_wrap(~direction, ncol=2) + NoLegend()
+#      ylab(bquote("-log"[10]~"(Adj. P-value)")) +
+
+p2 <- overlap_df %>%
+  ggplot(aes(x = Jaccard, y=fct_rev(module))) + 
+  geom_bar(stat='identity') + 
+  geom_text(aes(label=round(Jaccard, 3)), x=0, hjust=-0.5) +
+  theme(
+    axis.line.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_blank(),
+    axis.text.x = element_blank()
+  ) 
+
+pdf(paste0(fig_dir, 'tDEG_overlap_barplot.pdf'), width=4, height=6, useDingbats=FALSE)
+(p1 | p2) + plot_layout(widths=c(5,1))
+dev.off()
+
+```
+
+Making the t-DEG expression heatmap faceted by module 
+
+```{r eval=FALSE}
+
+# load the t-DEG data:
+cur_group <- 'Old'
+load(file=paste0('/dfs7/swaruplab/smorabit/collab/AMRF/analysis/ATAC/data/ODC', '_', cur_group, '_expression_trajectory_data.rda'))
+
+modules <- GetModules(seurat_rna, wgcna_name = 'oligo')
+mods <- levels(modules$module)
+genes_keep <- unique(modules$gene_name)
+
+tmp <- ordered[rownames(ordered) %in% genes_keep,]
+plot_df <- reshape2::melt(as.matrix( tmp[rev(rownames(tmp)),]))
+
+ix <- match(plot_df$Var1, modules$gene_name)
+plot_df$module <- modules$module[ix]
+
+#plot_df <- dplyr::left_join(plot_df, modules, by=c("Var1" = "gene_name"))
+#plot_df <- na.omit(plot_df)
+
+plot_list <- list()
+for(mod in mods){
+  mod_color <- subset(modules, module == mod) %>% .$color %>% unique
+
+  plot_list[[mod]] <- plot_df %>% subset(module == mod) %>%
+    ggplot(aes(y=Var1, x=as.numeric(Var2), fill=value, color=value)) +
+    rasterise(geom_tile(), dpi=300) +
+    scale_color_gradient2(low='white', high=mod_color) +
+    scale_fill_gradient2(low='white', high=mod_color) +
+    scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) + 
+   # scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+    #scale_fill_viridis() +
+   # scale_color_viridis() +
+    theme(
+      plot.margin = margin(0,0,0,0),
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.title.y = element_text(angle=0, face='bold', vjust=0.5, color=mod_color),
+      panel.border= element_rect(linewidth=1, color='black', fill=NA)
+    ) + ylab(mod) + NoLegend()
+}
+
+
+
+ngenes <- table(modules$module)
+plot_sizes <- (ngenes / sum(ngenes)) * 10
+
+pdf(paste0(fig_dir, cur_group, '_tDEG_heatmap2.pdf'), width=5, height=15)
+wrap_plots(plot_list, heights=plot_sizes, ncol=1) + plot_layout(guides='collect')
+dev.off()
+
+
+```

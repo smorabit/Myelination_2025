@@ -1,0 +1,889 @@
+
+Jan 2025 Updates 
+
+The goal is to make a bunch of plots for the TF network figure!!!
+
+* Mess with & Update the TF pathfinding code. Mostly to just look at Regulons instead of the Full TF net, since that is largely what I do these days. 
+
+```{r eval=FALSE}
+
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(hdWGCNA)
+
+expressed_genes <- GetWGCNAGenes(seurat_rna)
+length(expressed_genes)
+
+# define the number of pseudotime bins
+nbins <- 50
+
+cur_group <- 'Young'
+cur_group <- 'Old'
+
+load(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_expression_trajectory_data.rda'))
+
+importance_df <- read.csv(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_xgboost_importance.csv') )
+target_df <- read.csv(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_target_df.csv') ) %>% dplyr::select(-X)
+
+tfs <- as.character(tf_z_df$gene)
+
+target_df <- subset(target_df, source %in% tfs)
+
+#------------------------------------------------------#
+# Define Regulons
+#------------------------------------------------------#
+
+modules_oligo <- GetModules(seurat_hd, wgcna_name = 'oligo')
+modules_opc <- GetModules(seurat_hd, wgcna_name = 'opc')
+grey_genes <- unique(c(
+  subset(modules_oligo, module == 'grey') %>% .$gene_name,
+  subset(modules_opc, module == 'grey') %>% .$gene_name
+))
+grey_genes <- grey_genes[!(grey_genes %in% c(validation_tfs))]
+
+reg_thresh <- 0.01 
+n_tfs <- 10
+
+target_df_full <- target_df 
+
+# Take the top TFs for each gene
+# positive & negaitve correlated
+tf_regulons_full <- target_df %>% 
+    subset(Gain >= reg_thresh & !(target %in% grey_genes)) %>% 
+    dplyr::group_by(target) %>%
+    dplyr::slice_max(order_by=Gain, n=n_tfs) %>% 
+    dplyr::ungroup() 
+
+# write the regulon table:
+write.csv(
+  tf_regulons_full, 
+  file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulons.csv'), row.names=FALSE
+)
+
+#--------------- get the primary + secondary targets ---------------#
+
+for(cur_tf in validation_tfs){
+
+  print(cur_tf)
+
+  # initial condition
+  prev_tfs <- cur_tf
+  cur_network <- data.frame()
+  depth <- 2
+
+  # loop for each depth level
+  for(i in 1:depth){
+
+      cur_regulons <- tf_regulons_full %>% 
+          subset(source %in% prev_tfs) %>% 
+          mutate(depth = i)
+      cur_network <- rbind(cur_network,  cur_regulons)
+
+      # subset for tfs
+      cur_tfs <- cur_regulons %>% 
+          subset(target %in% unique(tf_regulons_full$source)) %>% .$target
+
+      prev_tfs <- unique(c(prev_tfs, cur_tfs))
+  }
+
+  # write the regulon table:
+  write.csv(
+    cur_network, 
+    file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_targets_', cur_tf, '.csv'), row.names=FALSE
+  )
+}
+
+#-------------- calculate positive regulon scores #-------------- 
+tf_regulons <- tf_regulons_full %>% subset(cor > 0)
+
+# set up the lists
+tfs_use <- unique(tf_regulons$source)
+target_genes <- lapply(tfs_use, function(cur_tf){
+    subset(tf_regulons, source == cur_tf) %>% 
+    slice_max(n=500, order_by=Gain) %>% .$target
+})
+names(target_genes) <- tfs_use
+
+# use UCell to comptue the TF regulons cores
+regulon_scores <- UCell::AddModuleScore_UCell(
+    seurat_rna, features=target_genes
+)@meta.data
+regulon_scores <- regulon_scores[,paste0(tfs_use, '_UCell')]
+colnames(regulon_scores) <- gsub("_UCell", "", colnames(regulon_scores))
+regulon_scores_pos <- regulon_scores 
+
+tmp <- colnames(regulon_scores)
+tmp[!(tmp %in% names(target_genes))]
+
+#-------------- calculate negative regulon scores #-------------- 
+tf_regulons <- tf_regulons_full %>% subset(cor < 0.05)
+
+# set up the lists
+tfs_use <- unique(tf_regulons$source)
+target_genes <- lapply(tfs_use, function(cur_tf){
+    subset(tf_regulons, source == cur_tf) %>% 
+    slice_max(n=500, order_by=Gain) %>% .$target
+})
+names(target_genes) <- tfs_use
+
+# use UCell to comptue the TF regulons cores
+regulon_scores <- UCell::AddModuleScore_UCell(
+    seurat_rna, features=target_genes
+)@meta.data
+regulon_scores <- regulon_scores[,paste0(tfs_use, '_UCell')]
+colnames(regulon_scores) <- gsub("_UCell", "", colnames(regulon_scores))
+regulon_scores_neg <- regulon_scores 
+
+# save the Regulon Scores 
+
+write.csv(
+  regulon_scores_pos, 
+  file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulon_scores_pos.csv')
+)
+
+write.csv(
+  regulon_scores_neg, 
+  file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulon_scores_neg.csv')
+)
+
+```
+
+
+Visualize Dynamics of TF Regulons 
+
+* Adapt the code used for hdWGCNA module dynamics.
+* How does the expression compare w/ the regulon Dynamics? Young vs. Old?
+* Two heatmaps, one showing the expression of TFs across pseudotime (subset of the heatmap that I already have), another showing the regulon scores of the same TFs across pseudotime.
+
+Questions:
+* Which TFs have the highest correlation between its exprssion level and regulon scores?
+
+```{r eval =FALSE}
+
+# which set of TFs to plot?
+validation_tfs <- c('Bach2', 'Sox8', 'Elf2', 'Bhlhe41', 'Nr6a1', 'Stat3', 'Foxk2'); cur_name <- 'validation'
+validation_tfs <- c('Sox10', 'Olig2', 'Olig1', 'Tcf4', 'Nkx2-2', 'Nkx6-2'); cur_name <- 'critical'
+
+cur_group <- 'Old'; ordered <- old_ordered; plot_colors <- c('darkorchid3', 'mediumorchid1')
+cur_group <- 'Young'; ordered <- young_ordered; plot_colors <- c('seagreen', 'seagreen3')
+
+tf_regulons_full <- read.csv(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulons.csv'))
+tf_regulons <- tf_regulons_full
+
+regulon_scores_pos <- read.csv(
+  file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulon_scores_pos.csv'),  row.names=1, sep=','
+)
+colnames(regulon_scores_pos) <- gsub('[.]', '-', colnames(regulon_scores_pos))
+
+regulon_scores_neg <- read.table(
+  file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulon_scores_neg.csv'), row.names=1, sep=','
+)
+colnames(regulon_scores_neg) <- gsub('[.]', '-', colnames(regulon_scores_neg))
+
+#--------------------------------------------------------#
+# Plotting code adapted from hdWGCNA PlotModuleTrajectory
+#--------------------------------------------------------#
+
+# options 
+point_size <- NA
+line_size <- 1
+ps_bin_name <- 'pseudotime_bins_50'
+
+# TODO: Just plot this in the Old / Young dataset?
+cur_bcs <- subset(seurat_rna@meta.data, Group == cur_group) %>% rownames()
+
+# which regulon scores to use?
+regulon_scores <- regulon_scores_pos
+regulon_scores <- regulon_scores[cur_bcs,]
+
+# name of the TFs to plot:
+cur_tfs <- validation_tfs
+
+# combine the metadata with the TF scores
+meta <- seurat_rna@meta.data[cur_bcs,]
+plot_df <- cbind(meta, regulon_scores[,cur_tfs])
+
+# compute the average ME in each pseudotime bin
+avg_scores <- plot_df %>%
+        group_by(get(ps_bin_name)) %>%
+        select(all_of(cur_tfs)) %>%
+        summarise_all(mean)
+for(cur_tf in cur_tfs){
+  avg_scores[,cur_tf] <- scale01(avg_scores[,cur_tf])
+}
+
+colnames(avg_scores)[1] <- 'bin'
+avg_df <- reshape2::melt(avg_scores)
+avg_df$bin <- as.numeric(avg_df$bin)
+avg_df$type <- 'Regulon'
+
+# combine the metadata with the TF scores
+X <- GetAssayData(seurat_rna, slot='data')[cur_tfs, cur_bcs] %>% t()
+plot_df <- cbind(meta, X)
+
+# compute the average ME in each pseudotime bin
+avg_scores <- plot_df %>%
+        group_by(get(ps_bin_name)) %>%
+        select(all_of(cur_tfs)) %>%
+        summarise_all(mean)
+for(cur_tf in cur_tfs){
+  avg_scores[,cur_tf] <- scale01(avg_scores[,cur_tf])
+}
+
+colnames(avg_scores)[1] <- 'bin'
+exp_df <- reshape2::melt(avg_scores)
+exp_df$bin <- as.numeric(exp_df$bin)
+exp_df$type <- 'Gene'
+
+# combine expression + Regulon:
+plot_df <- rbind(exp_df, avg_df)
+
+p <- ggplot(
+            plot_df,
+            aes(x = bin, y=value, color=type, fill=type)
+        ) + 
+        geom_point(size=point_size) + 
+        geom_smooth(size=line_size, se=FALSE) + 
+        scale_color_manual(values=plot_colors) +
+        scale_fill_manual(values=plot_colors) +
+        xlab('') + 
+        ylab('Scaled expression') + 
+        theme(
+            axis.ticks.x = element_blank(),
+            axis.text.x = element_blank(), 
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(size=1, fill=NA, color='black')
+        ) 
+
+patch1 <- p + facet_wrap(~variable, ncol=length(validation_tfs))
+
+pdf(paste0(fig_dir,cur_group, "_regulon_trajectories_", cur_name,".pdf"), width=14, height=2)
+print(patch1)
+dev.off()
+
+#----------------------------------------------------------------
+# t-DEG heatmaps By TF regulons 
+#----------------------------------------------------------------
+
+plot_list <- list(); ngenes <- c()
+for(cur_tf in validation_tfs){
+  print(cur_tf)
+  cur_genes <- tf_regulons_full %>% subset(source == cur_tf & target %in% rownames(ordered) & cor > 0.1) %>% .$target
+  ngenes <- c(ngenes, length(cur_genes))
+
+  tmp <- ordered[rownames(ordered) %in% cur_genes,]
+  plot_df <- reshape2::melt(as.matrix( tmp[rev(rownames(tmp)),]))
+
+  plot_list[[cur_tf]] <- plot_df  %>%
+    ggplot(aes(y=Var1, x=as.numeric(Var2), fill=value, color=value)) +
+    rasterise(geom_tile(), dpi=300) +
+    scale_color_gradient2(low='white', high=plot_colors[1]) +
+    scale_fill_gradient2(low='white', high=plot_colors[1]) +
+    scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) + 
+    theme(
+      plot.margin = margin(0,0,0,0),
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.title.y = element_text(angle=0, face='bold', vjust=0.5),
+      panel.border= element_rect(linewidth=1, color='black', fill=NA)
+    ) + ylab('') 
+}
+
+patch2 <- wrap_plots(plot_list, ncol=length(validation_tfs)) + plot_layout(guides='collect')
+
+patch3 <- (patch1 / patch2) + plot_layout(heights=c(1,3))
+
+pdf(paste0(fig_dir, cur_group, '_tfnet_regulon_dynamics_', cur_name, '.pdf'), width=12, height=6)
+patch3
+dev.off()
+
+```
+
+
+Compare Regulon scores between young & old 
+
+```{r eval=FALSE}
+
+# which set of TFs to plot?
+validation_tfs <- c('Bach2', 'Sox8', 'Elf2', 'Bhlhe41', 'Nr6a1', 'Stat3', 'Foxk2'); cur_name <- 'validation'
+validation_tfs <- c('Sox10', 'Olig2', 'Olig1', 'Tcf4', 'Nkx2-2', 'Nkx6-2'); cur_name <- 'critical'
+
+cur_group <- 'Old'; ordered <- old_ordered; plot_colors <- c('darkorchid3', 'mediumorchid1')
+cur_group <- 'Young'; ordered <- young_ordered; plot_colors <- c('seagreen', 'seagreen3')
+
+tf_regulons_full <- read.csv(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulons.csv'))
+tf_regulons <- tf_regulons_full
+importance_df <- read.table(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_xgboost_importance.csv'), sep=',', header=TRUE)
+
+
+regulon_df <- data.frame()
+for(cur_group in c('Old', 'Young')){
+
+  # load regulon + full network 
+  tf_regulons <- read.csv(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulons.csv'))
+  importance_df <- read.table(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_xgboost_importance.csv'), sep=',', header=TRUE)
+  importance_df <- importance_df[,2:ncol(importance_df)]
+
+  # add group info 
+  tf_regulons$group <- cur_group; importance_df$group <- cur_group 
+
+  for(cur_tf in validation_tfs){
+
+    regulons <- subset(tf_regulons, source == cur_tf)
+    cur_net <- subset(importance_df, source == cur_tf)
+
+    # add column for the tf-gene pair 
+    cur_net$pair <- paste0(cur_net$source, '_', cur_net$target)
+    cur_net$regulon <- cur_net$target %in% unique(regulons$target)
+
+    regulon_df <- rbind(regulon_df, cur_net)
+
+  }
+}
+
+
+# fill in the missing values for each group with all 0's
+plot_df <- data.frame()
+for(cur_tf in unique(regulon_df$source)){
+
+  cur_regulon <- subset(regulon_df, source == cur_tf)
+  all_pairs <- unique(cur_regulon$pair)
+
+  for(cur_group in unique(regulon_df$group)){
+
+    cur_regulon_group <- subset(cur_regulon, group == cur_group)
+
+    missing_pairs <- all_pairs[! all_pairs %in% unique(cur_regulon_group$pair)]
+    tmp <- do.call(rbind, strsplit(missing_pairs, '_'))
+    missing_tfs <- tmp[,1]
+    missing_genes <- tmp[,2]
+
+    cur_missing <- data.frame(
+      source = missing_tfs,
+      target = missing_genes,
+      Gain = 0, Cover=0, Frequency=0, exp_cor=0, 
+      group = cur_group, 
+      pair = missing_pairs,
+      regulon = FALSE
+    )
+
+    # update
+    cur_regulon_group <- rbind(cur_regulon_group, cur_missing)
+    
+    # re-order:
+    rownames(cur_regulon_group) <- cur_regulon_group$pair 
+    cur_regulon_group <- cur_regulon_group[all_pairs,]
+
+    plot_df <- rbind(plot_df, cur_regulon_group)
+
+  }
+}
+rownames(plot_df) <- 1:nrow(plot_df)
+head(plot_df)
+
+#--------------------------------------------------------------
+# Plot showing the targets that are regulons in both
+#--------------------------------------------------------------
+
+plot_list <- list()
+for(cur_tf in validation_tfs){
+
+  print(cur_tf)
+
+  plot_df1 <- subset(plot_df, group == "Young" & source == cur_tf)
+  plot_df2 <- subset(plot_df, group == "Old" & source == cur_tf)
+
+  cur_plot_df <- dplyr::left_join(plot_df1, plot_df2, by = 'pair')
+
+  # only keep genes that are regulons in both:
+  cur_plot_df <- subset(cur_plot_df, regulon.x & regulon.y)
+
+  up_right <- cur_plot_df %>% subset(exp_cor.x > 0 & exp_cor.y > 0) %>% nrow
+  down_right <- cur_plot_df %>% subset(exp_cor.x > 0 & exp_cor.y < 0) %>% nrow
+  up_left <- cur_plot_df %>% subset(exp_cor.x < 0 & exp_cor.y > 0) %>% nrow
+  down_left <- cur_plot_df %>% subset(exp_cor.x < 0 & exp_cor.y < 0) %>% nrow
+
+  annotations <- data.frame(
+        xpos = c(-Inf,-Inf,Inf,Inf),
+        ypos =  c(-Inf, Inf,-Inf,Inf),
+        group = c('Consistent', 'Inconsistent', 'Inconsistent', 'Consistent'),
+        annotateText = c(as.character(down_left),as.character(up_left), as.character(down_right),as.character(up_right)),
+        hjustvar = c(-1,-1,2,2),
+        vjustvar = c(-1,2,-1,2)) #<- adjust
+
+  # color by consistent or inconsistent
+  cur_plot_df$group <- ifelse(sign(cur_plot_df$exp_cor.x) == sign(cur_plot_df$exp_cor.y), 'Consistent', 'Inconsistent')
+  group_colors <- c('blue', 'darkgoldenrod1')
+  names(group_colors) <- c('Consistent', 'Inconsistent')
+
+  # get plotting limits
+  plot_lim <- max(c(cur_plot_df$Gain.x, cur_plot_df$Gain.y))
+
+  p <- cur_plot_df %>%
+    ggplot(aes(x = Gain.x * sign(exp_cor.x), y=Gain.y * sign(exp_cor.y), color=group)) + 
+  geom_vline(xintercept=0, linetype='dashed', linewidth=0.5, color='lightgrey') +
+  geom_hline(yintercept=0, linetype='dashed', linewidth=0.5, color='lightgrey') +
+  ggrastr::rasterise(geom_point(alpha=0.8), dpi=300) + 
+  # geom_hex() +
+    #geom_smooth(method='lm', color='black') + 
+    #stat_cor(method='pearson', aes(label=..r.label..)) + 
+    xlim(c(-plot_lim, plot_lim)) + ylim(c(-plot_lim, plot_lim)) + 
+    coord_fixed() + 
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5)
+    ) + 
+    scale_color_manual(values=group_colors) + 
+    xlab('Young reg. score') + 
+    ylab('Old reg. score') + 
+    ggtitle(cur_tf) + 
+    NoLegend() + 
+    geom_text(inherit.aes=FALSE, data=annotations,aes(x=xpos,y=ypos,hjust=hjustvar,vjust=vjustvar,label=annotateText, color=group))
+
+  plot_list[[cur_tf]] <- p
+
+}
+
+patch1 <- wrap_plots(plot_list, ncol=length(validation_tfs))
+
+
+#--------------------------------------------------------------
+# Plot showing the targets that are regulons in both
+#--------------------------------------------------------------
+
+group_colors <- c('seagreen', 'darkorchid3'); names(group_colors) <- c('Young', 'Old')
+g1 <- 'Young'; g2 <- 'Old'
+
+plot_list <- list()
+for(cur_tf in validation_tfs){
+
+  print(cur_tf)
+
+  plot_df1 <- subset(plot_df, group == g1 & source == cur_tf)
+  plot_df2 <- subset(plot_df, group == g2 & source == cur_tf)
+
+  cur_plot_df <- dplyr::left_join(plot_df1, plot_df2, by = 'pair')
+
+  # color by regulons:
+  cur_plot_df$color_group <- ifelse(cur_plot_df$regulon.x, g1, 'none')
+  cur_plot_df$color_group <- ifelse(cur_plot_df$regulon.y, g2, cur_plot_df$color_group)
+  cur_plot_df$color_group <- ifelse(cur_plot_df$regulon.y & cur_plot_df$regulon.x, 'both', cur_plot_df$color_group)
+
+  cur_cp <- c('black', as.character(group_colors[g1]), as.character(group_colors[g2]), 'grey') 
+  names(cur_cp) <- c('both', g1, g2, 'none')
+  cur_plot_df$color_group <- factor(as.character(cur_plot_df$color_group), levels=names(cur_cp))
+
+  cur_plot_df <- subset(cur_plot_df, color_group %in% c(g1, g2))
+
+  # get plotting limits
+  plot_lim <- max(c(cur_plot_df$Gain.x, cur_plot_df$Gain.y))
+
+  up <- subset(cur_plot_df, exp_cor.y > 0 & color_group == g2) %>% nrow
+  down <- subset(cur_plot_df, exp_cor.y < 0 & color_group == g2) %>% nrow
+  right <- subset(cur_plot_df, exp_cor.x > 0 & color_group == g1) %>% nrow 
+  left <- subset(cur_plot_df, exp_cor.x > 0 & color_group == g2) %>% nrow 
+
+
+  annotations <- data.frame(
+          xpos = c(0,0,-Inf,Inf),
+          ypos =  c(-Inf, Inf,0,0),
+          group = c(g2, g2, g1, g1),
+          annotateText = c(as.character(down),as.character(up), as.character(left),as.character(right)),
+          hjustvar = c(0,0,-1,1),
+          vjustvar = c(-1,1,0,0)) #<- adjust
+
+  p <- cur_plot_df %>%
+    ggplot(aes(x = Gain.x * sign(exp_cor.x), y=Gain.y * sign(exp_cor.y), color=color_group)) + 
+  geom_vline(xintercept=0, linetype='dashed', linewidth=0.5, color='lightgrey') +
+  geom_hline(yintercept=0, linetype='dashed', linewidth=0.5, color='lightgrey') +
+  ggrastr::rasterise(geom_point(alpha=0.8), dpi=300) + 
+  # geom_hex() +
+    #geom_smooth(method='lm', color='black') + 
+  # stat_cor(method='pearson', aes(label=..r.label..)) + 
+    xlim(c(-plot_lim, plot_lim)) + ylim(c(-plot_lim, plot_lim)) + 
+    coord_fixed() + 
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5)
+    ) + 
+    scale_color_manual(values=cur_cp) + 
+    xlab('Young reg. score') + 
+    ylab('Old reg. score') + 
+    NoLegend() +
+    geom_text(inherit.aes=FALSE, data=annotations,aes(x=xpos,y=ypos,hjust=hjustvar,vjust=vjustvar,label=annotateText, color=group))
+
+
+  plot_list[[cur_tf]] <- p
+
+}
+
+patch2 <- wrap_plots(plot_list, ncol=length(validation_tfs))
+
+patch3 <- (patch1 / patch2)
+
+pdf(paste0(fig_dir, cur_celltype, '_tfnet_regulon_compare_', cur_name,'.pdf'), width=3.1*length(validation_tfs), height=6)
+patch3
+dev.off()
+
+#--------------------------------------------------------------
+# Gene set overlap testing
+#--------------------------------------------------------------
+
+library(GeneOverlap)
+
+# set size for gene overlap
+modules_oligo <- GetModules(seurat_hd, wgcna_name = 'oligo')
+modules_opc <- GetModules(seurat_hd, wgcna_name = 'opc')
+grey_genes <- unique(c(
+  subset(modules_oligo, module == 'grey') %>% .$gene_name,
+  subset(modules_opc, module == 'grey') %>% .$gene_name
+))
+grey_genes <- grey_genes[!(grey_genes %in% c(validation_tfs))]
+tmp <- unique(c(rownames(old_ordered), rownames(young_ordered)))
+tmp <- tmp[!(tmp %in% grey_genes)]
+genome.size <- length(tmp)
+
+
+overlap_df <- data.frame()
+barplot_df <- data.frame()
+for(cur_tf in validation_tfs){
+
+  cur_regulon <- subset(plot_df, source == cur_tf) 
+
+  cur_y <- subset(cur_regulon, group == 'Young' & regulon) %>% .$target
+  cur_o <- subset(cur_regulon, group == 'Old' & regulon)  %>% .$target
+
+  y_only <- setdiff(cur_y, cur_o)
+  o_only <- setdiff(cur_o, cur_y)
+  shared <- intersect(cur_o, cur_y)
+
+  cur_overlap <- testGeneOverlap(newGeneOverlap(
+      cur_y,
+      cur_o,
+      genome.size=genome.size
+  ))
+
+  cur_overlap <- data.frame(
+    'odds.ratio' = c(cur_overlap@odds.ratio),
+    'pval' = c(cur_overlap@pval),
+    'Jaccard' = c(cur_overlap@Jaccard),
+    'size_intersection' = c(length(cur_overlap@intersection)),
+    'tf' = cur_tf
+  )
+  overlap_df <- rbind(overlap_df, cur_overlap)
+
+  cur_df <- data.frame(
+    n = c(length(y_only), length(shared), length(o_only)),
+    group = c('Young', 'Shared', 'Old'),
+    tf = cur_tf,
+    signif = cur_overlap$pval < 0.05
+  )
+  cur_df$percentage <- cur_df$n / sum(cur_df$n)
+  barplot_df <- rbind(barplot_df, cur_df)
+
+}
+overlap_df$fdr <- p.adjust(overlap_df$pval, method='fdr')
+overlap_df$shape <- ifelse(overlap_df$fdr < 0.05, 21, 4)
+
+# order of modules
+barplot_df$tf <- factor(as.character(barplot_df$tf), levels=validation_tfs)
+overlap_df$tf <- factor(as.character(overlap_df$tf), levels=validation_tfs)
+
+p1 <- barplot_df %>%
+  ggplot(aes(x = percentage, y=fct_rev(tf), fill=group)) + 
+  geom_bar(position='stack', stat='identity') + 
+  # scale_fill_manual(values=amylo_cp) + 
+  geom_text(aes(label=abs(n)), position = position_stack(vjust=0.5)) +
+  #xlim(-plot_max, plot_max) +
+#  scale_x_continuous(expand = c(0, 0), limits = c(-plot_max, plot_max)) + 
+  theme(
+    axis.line.y = element_blank(),
+    axis.title.y = element_blank()
+  ) + 
+  xlab("Proportion") + NoLegend() + 
+   scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) 
+  #facet_wrap(~direction, ncol=2) + NoLegend()
+#      ylab(bquote("-log"[10]~"(Adj. P-value)")) +
+
+p2 <- overlap_df %>%
+  ggplot(aes(x = Jaccard, y=fct_rev(tf))) + 
+  geom_bar(stat='identity') + 
+  geom_text(aes(label=round(Jaccard, 3)), x=0, hjust=-0.5) +
+  theme(
+    axis.line.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_blank(),
+    axis.text.x = element_blank()
+  ) 
+
+pdf(paste0(fig_dir, cur_celltype, '_tfnet_regulon_overlap_barplot_', cur_name,'.pdf'), width=4, height=6, useDingbats=FALSE)
+(p1 | p2) + plot_layout(widths=c(5,1))
+dev.off()
+
+```
+
+Visualize primary + secondary Target networks 
+
+```{r eval=FALSE}
+
+# which set of TFs to plot?
+validation_tfs <- c('Bach2', 'Sox8', 'Elf2', 'Bhlhe41', 'Nr6a1', 'Stat3', 'Foxk2'); cur_name <- 'validation'
+validation_tfs <- c('Sox10', 'Olig2', 'Olig1', 'Tcf4', 'Nkx2-2', 'Nkx6-2'); cur_name <- 'critical'
+
+cur_group <- 'Old'; ordered <- old_ordered; plot_colors <- c('darkorchid3', 'mediumorchid1'); high_color = 'orange2'; low_color = 'dodgerblue'
+cur_group <- 'Young'; ordered <- young_ordered; plot_colors <- c('seagreen', 'seagreen3'); high_color = 'deeppink2'; low_color = 'turquoise4'
+
+tf_regulons_full <- read.csv(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulons.csv'))
+tf_regulons <- tf_regulons_full
+
+# initial condition
+depth <- 2
+edge_weight <- 'Gain'
+color_cutoff <- 0.25
+cutoff <- 0.01
+TFs_only <- FALSE
+label_TFs <- 1
+label_genes <- NULL 
+mid_color = 'white'
+node_colors =  c('black', plot_colors)
+no_labels <- FALSE
+max_label <- 15
+raster_dpi <- 500
+
+for(cur_tf in validation_tfs){
+  
+  print(cur_tf)
+  prev_tfs <- cur_tf
+  selected_tfs <- cur_tf
+
+  # initialize network
+  cur_network <- data.frame()
+
+  # loop for each depth level
+  for(i in 1:depth){
+
+      cur_regulons <- tf_regulons_full %>% 
+          subset(source %in% prev_tfs & abs(get(edge_weight)) > cutoff) %>% 
+          mutate(depth = i)
+      cur_network <- rbind(cur_network,  cur_regulons)
+
+      # subset for tfs
+      cur_tfs <- cur_regulons %>% 
+          subset(target %in% unique(tf_regulons_full$source)) %>% .$target
+
+      prev_tfs <- unique(c(prev_tfs, cur_tfs))
+  }
+
+  # get the max depth of each gene
+  gene_depths <- cur_network %>% 
+      group_by(target) %>% 
+      slice_min(n=1, order_by=depth) %>% 
+      select(c(target, depth)) %>% distinct()
+
+  # set the column that will be used as the edge weight
+  cur_network$edge_weight <- cur_network[,edge_weight]
+  if(edge_weight == 'Gain'){
+      cur_network$edge_weight <- cur_network$edge_weight * sign(cur_network$cor)
+  }
+
+  # cutoff for edge_weight
+  cur_network$edge_weight <- ifelse(abs(cur_network$edge_weight) > color_cutoff, sign(cur_network$edge_weight) * color_cutoff, cur_network$edge_weight)
+  cur_network <- subset(cur_network, abs(edge_weight) >= cutoff)
+
+  # make an igraph network 
+  cur_network <- cur_network %>%
+      mutate(Score = sign(cor) * Gain)
+
+  # get a list of genes in the network    
+  cur_genes <- unique(cur_network$target)
+
+  # do we only want to plot TFs?
+  # if(TFs_only){cur_network <- subset(cur_network, target %in% unique(tf_net$tf))}
+
+  print(nrow(cur_network))
+
+  # make a tidygraph
+  graph <- tidygraph::as_tbl_graph(cur_network) %>% 
+      tidygraph::activate(nodes) %>% 
+      mutate(degree  = centrality_degree())  
+
+  # compute the degree for each TF:
+  tf_degrees <- table(tf_regulons$source)
+  tmp <- tf_degrees[names(V(graph))]; tmp <- tmp[!is.na(tmp)]
+  V(graph)[names(tmp)]$degree <- as.numeric(tmp)
+
+  # specify the selected TFs vs TFs vs genes
+  V(graph)$gene_type <- ifelse(names(V(graph)) %in% unique(tf_regulons$source), 'TF', 'Gene')
+  V(graph)$gene_type <- ifelse(names(V(graph)) %in% selected_tfs, 'selected', V(graph)$gene_type)
+
+  # set up the graph layout
+  if(igraph::is_connected(graph)){
+      n_pivots <- 250
+      if(length(V(graph)) < n_pivots){
+          n_pivots <- length(V(graph)) / 2
+      }
+      lay <- ggraph::create_layout(graph, layout='sparse_stress', pivots=n_pivots)
+  } else{
+      lay <- ggraph::create_layout(graph, layout='igraph', algorithm='nicely')
+  }
+
+  # correct for the edge case where there are Nas
+  lay[is.na(lay$x),'x'] <- 0
+  lay[is.na(lay$y),'y'] <- 0
+
+  # add extra info
+  lay$size <- ifelse(lay$name %in% unique(tf_regulons$source), 5, 2)
+
+  # add the depth:
+  tmp <- dplyr::left_join(lay, gene_depths, by = c('name' = 'target'))
+  lay$depth <- tmp$depth
+  lay$depth <- ifelse(lay$name %in% selected_tfs, 0, lay$depth)
+  lay$depth <- factor(lay$depth, levels=0:depth)
+
+  # shape layout:
+  cur_shapes <- c(18, 17, 16); names(cur_shapes) <- c('selected', 'TF', 'Gene')
+
+  # set up plotting labels 
+  label_tfs <- cur_network %>% 
+    subset(depth <= label_TFs & target %in% tf_regulons$source) %>% 
+    slice_max(n = max_label, order_by = abs(weight)) %>% .$target %>% unique
+  lay$lab <- ifelse(lay$name %in% c(selected_tfs, label_tfs, label_genes), lay$name, NA)
+
+  # node colors
+  cp <- node_colors[1:(depth+1)]
+  names(cp) <- levels(lay$depth)
+
+  # color by depth
+  p <- ggraph(lay) + 
+      ggrastr::rasterise(geom_edge_link(
+          aes(color=edge_weight, alpha=abs(edge_weight)),
+          arrow = arrow(length = unit(1, 'mm'), type='closed'),
+          end_cap = circle(2, 'mm'),
+          edge_width=0.5
+      ), dpi=raster_dpi) + 
+      ggrastr::rasterise(
+        geom_node_point(
+          data=subset(lay, (! name %in% tf_regulons$source)), 
+          aes(color=depth, size=degree, shape=gene_type)
+        ), dpi=raster_dpi) +
+      geom_node_point(data=subset(lay, name %in% tf_regulons$source & !(name %in% selected_tfs)), aes(fill=depth, size=degree), color='black', shape=25) +
+      #geom_node_point(data=subset(lay, name %in% selected_tfs ), aes(color=depth, shape=gene_type, size=degree)) +
+      geom_node_point(data=subset(lay, name %in% selected_tfs ), aes(fill=depth, size=degree), color = 'black', shape=23) +
+      scale_edge_colour_gradient2(high=high_color, mid=mid_color, low=low_color)  + 
+      scale_colour_manual(values=cp) + 
+      scale_fill_manual(values=cp) +
+      scale_shape_manual(values=cur_shapes) 
+
+  # add the labels
+  if(! no_labels){
+      p <- p +         
+          geom_node_label(aes(label=lab), repel=TRUE, max.overlaps=Inf, fontface='italic')
+  }
+
+  # clean up the legends
+  p <- p + guides(
+      edge_alpha="none", 
+      size = "none",
+      shape = "none",
+      fill = "none"
+  ) 
+  p <- p + labs(edge_colour='strength')
+
+  # theme 
+  p <- p + theme(
+    panel.border = element_rect(fill=NA, color='black', linewidth=0.5),
+    plot.title  = element_text(hjust=0.5)
+  )
+
+  # title 
+  p <- p + ggtitle(paste0(cur_tf, ', ', cur_group))
+
+  pdf(paste0(fig_dir,cur_group, "_TFnet_", cur_tf, ".pdf"), width=5, height=4)
+  print(p)
+  dev.off()
+
+}
+
+```
+
+
+Enrichment analysis 
+
+Potentially will need to re-visit this section to select different GO terms?
+Good for now though!
+
+```{r eval=FALSE}
+
+library(enrichR)
+
+# which set of TFs to plot?
+validation_tfs <- c('Bach2', 'Sox8', 'Elf2', 'Bhlhe41', 'Nr6a1', 'Stat3', 'Foxk2'); cur_name <- 'validation'
+validation_tfs <- c('Sox10', 'Olig2', 'Olig1', 'Tcf4', 'Nkx2-2', 'Nkx6-2'); cur_name <- 'critical'
+
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021', 'WikiPathway_2021_Mouse', 'KEGG_2021_Mouse')
+
+cur_group <- 'Old'; ordered <- old_ordered; plot_colors <- c('darkorchid3', 'mediumorchid1')
+cur_group <- 'Young'; ordered <- young_ordered; plot_colors <- c('seagreen', 'seagreen3')
+
+tf_regulons_full <- read.csv(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', cur_group, '_tf_regulons.csv'))
+tf_regulons <- tf_regulons_full
+
+
+cutoff <- 0.01
+combined_output <- data.frame()
+
+for(cur_tf in validation_tfs){
+
+  cur_regulon <- subset(tf_regulons, source == cur_tf & Gain >= cutoff)
+
+  # setup input list for enrichr loop
+  input_list <- list(
+    pos = subset(cur_regulon, exp_cor > 0) %>% .$target,
+    neg = subset(cur_regulon, exp_cor < 0) %>% .$target
+  )
+
+  # size of lists
+  lapply(input_list, function(x){
+    print(length(x))
+  })
+
+  # run enrichr and combine outputs
+  enriched_df <- do.call(rbind, lapply(names(input_list), function(x){
+    if(length(input_list[[x]]) > 0){
+      cur_enrich <- enrichr(input_list[[x]], dbs)
+    } else{return(data.frame())}
+    cur_df <- do.call(rbind, lapply(dbs, function(cur_db){
+      df <- cur_enrich[[cur_db]]
+      if(nrow(df) > 1){df$cor <- x; df$group <- cur_group; df$db <- cur_db; df$tf <- cur_tf}
+      else{df <- data.frame()}
+      df
+    }))
+  }))
+
+  combined_output <- rbind(combined_output, enriched_df)
+
+}
+
+combined_output$ngenes <- unlist(lapply(strsplit(combined_output$Genes, ';'), function(x){length(x)}))
+combined_output <- subset(combined_output, ngenes >= 3)
+
+write.table(combined_output, file=paste0(data_dir, cur_celltype, '_', cur_group, '_tfnet_target_GO_terms.tsv'), quote=FALSE, row.names=FALSE, sep='\t')
+
+table(combined_output$tf)
+
+```
+

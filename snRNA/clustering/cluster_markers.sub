@@ -1,0 +1,36 @@
+#!/bin/bash
+#SBATCH --job-name=FindMarkers
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 48G
+#SBATCH --array=1-37
+#SBATCH --time=72:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/snRNAseq/NucSeq_final_doublets_removed_online_inmf_seurat.rds"
+outdir="/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/DEGs/"
+type="markers"
+name="cluster_markers"
+cluster="subcluster_name"
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/collab/AMRF/bin/parallel_DEGs.R \
+    --seurat $seurat \
+    --outdir $outdir \
+    --type $type \
+    --cluster $cluster \
+    --name $name \
+    --index $SLURM_ARRAY_TASK_ID \
+    --test "MAST" \
+    --pos "TRUE" \
+    --pct 0.2 \
+    --logfc 0.25 \
+    --verbose "TRUE" \
+    --cores 16
