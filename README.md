@@ -24,7 +24,7 @@ snATAC-seq and snRNA-seq were performed **separately** in mouse spinal cord sect
 * [Pre-processing snATAC-seq data with `cellranger-atac count`](snATAC/preprocessing/cellranger-atac_count.sub)
 * [Pre-processing snRNA-seq data with `cellranger count`](snRNA/preprocessing/cellranger_count.sub)
 
-## snATAC-seq + snRNA-seq clustering and integration (Fig. 1)
+## 🗺️ snATAC-seq + snRNA-seq clustering and integration (Fig. 1)
 
 ### 🌳 Clustering
 
@@ -69,7 +69,7 @@ We sought to identify the processive regulatory events, or *cascades* of TF-TF a
 
 * [Identify TF regulatory cascades via optimal pathfinding analysis](integration/networks/TF_pathfinding.Rmd)
 
-## Dynamically altered TFs in ageing and disease (Fig. 4)
+## ⭐ Dynamically altered TFs in ageing and disease (Fig. 4)
 
 We next sought to prioritize TFs that are altered in ageing mice, and altered in human multiple sclerosis (MS). First, we collected and re-processed two snRNA-seq datasets of human MS.
 
@@ -83,18 +83,21 @@ Next we performed differential expression analysis across ageing in the mouse da
 * [Differential expression analysis with ageing in mice](snRNA/DEGs/ageing_DEGs.sub)
 * [Differential expression analysis in the human datasets](human/DEGs/)
 
-Finally, we synthesize this information together in order to prioritize TFs for further study. 
+Finally, we synthesize this information to prioritize TFs for further study with downstream experiments. 
 
 * [Prioritize TFs for downstream experiments, additional plotting](integration/prioritize_TFs.Rmd)
 
-## Bulk RNA-seq (Fig. 5)
+## ⚡ Bulk RNA-seq in cell (Fig. 5)
 
-We performed bulk RNA-seq in cell models where we over-expressed TFs of interest.
+We performed bulk RNA-seq experiments in cell models where we over-expressed TFs of interest (Bach2, Bhlhe41, Elf2, Foxk2, Nr6a1, Sox8, and Stat3).
 
-* [Bulk RNA-seq data processing]()
-* [Bulk RNA-seq differential expression analysis]()
-* [Bulk RNA-seq downstream plotting and comparison with single-nucleus data]()
-
-Find Ze's bulk RNA-seq scripts (on Google Drive )
+* [TODO: Bulk RNA-seq data processing](bulkRNA/processing/)
+* [TODO: Bulk RNA-seq differential expression analysis](bulkRNA/DEGs/)
+* [Bulk RNA-seq downstream plotting and comparison with single-nucleus data](bulkRNA/downstream/)
 
 ## Miscellaneous plotting and helper scripts
+
+Here are scripts that were used for additional plotting, and scripts containing helper functions.
+
+* [Miscellaneous plotting](misc/plotting_supplementary.Rmd)
+* [Helper scripts](misc/helpers/)
