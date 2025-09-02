@@ -1,0 +1,9 @@
+﻿nbb_num,sex,age,diagnosis,years_disease,treatment,pmi_hours
+09_034,M,45,MS,10,INFb-1a,7.5
+12_078,M,58,MS,19,NA,9
+09_067,M,44,MS,13,NA,12
+13_047,F,48,MS,22,NA,11.5
+13_015,M,56,MS,32,NA,9.5
+14_043,F,60,Control,0,NA,8
+11_069,M,49,Control,0,NA,6
+12_002,M,55,Control,0,NA,7

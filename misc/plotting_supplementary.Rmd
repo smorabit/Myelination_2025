@@ -1,0 +1,815 @@
+
+
+```
+
+nCPUs=${1:-32}
+MEM=${2:-64G}
+TIME=${3:-10:00:00}
+PARTITION=${4:-genDinteractive}
+QOS=${5:-normal}
+NODE=$6
+
+
+srun --partition=genD--cpus-per-task 8 --mem 256G -t 12:00:00 --qos=normal --pty /bin/bash -li
+```
+
+```{r eval=FALSE}
+
+
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+library(ggrepel)
+#library(ggpubr)
+#library(monocle3)
+library(ggrastr)
+#library(ArchR)
+library(patchwork)
+
+library(hdWGCNA)
+
+theme_set(theme_cowplot())
+set.seed(12345)
+
+setwd("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF")
+data_dir <- 'processed/'
+fig_dir <- 'figures/'
+
+
+# load the plotting functions
+source("~/analysis/SERPENTINE/bin/DEG_snakemake_v3/scripts/misc/helper_functions.R")
+source("~/analysis/SERPENTINE/bin/DEG_snakemake_v3/scripts/plotting/plotting_functions.R")
+
+
+# load snRNA-seq color scheme 
+snRNA_colors <- read.csv(paste0(data_dir, 'snRNA_colors.csv'))
+snRNA_colors <- dplyr::rename(snRNA_colors, c(group = cluster, colour = color))
+snRNA_cp <- snRNA_colors$colour; names(snRNA_cp) <- snRNA_colors$group
+
+
+```
+
+snRNA-seq sample-level info 
+
+```{r eval=FALSE}
+
+seurat_rna <- readRDS("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/seurat_objects/NucSeq_final_doublets_removed_online_inmf_seurat.rds")
+
+seurat_atac <- readRDS('/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/seurat_objects/signac_final_07-02-21_update.rds')
+
+
+colnames(seurat_rna@meta.data)
+
+cols_keep <- c("Sample.ID", "Group", "Time.point", "snRNAseq.Batch")
+
+rna_sample_meta <- seurat_rna@meta.data %>% dplyr::select(all_of(cols_keep)) %>% group_by(Sample.ID) %>% distinct() )
+table(seurat_rna$Sample.ID)
+
+rna_sample_meta %>% write.csv(file = 'supp_tables/rna_sample_meta.csv', row.names=FALSE, quote=FALSE)
+
+
+
+colnames(seurat_atac@meta.data)
+
+cols_keep <- c("Sample", "Group", "Timepoint", "Batch")
+
+atac_sample_meta <- seurat_atac@meta.data %>% dplyr::select(all_of(cols_keep)) %>% distinct() 
+
+atac_sample_meta %>% write.csv(file = 'supp_tables/atac_sample_meta.csv', row.names=FALSE, quote=FALSE)
+
+table(seurat_atac$Sample)
+table(seurat_rna$Sample.ID)
+
+```
+
+Write t-DEGs for supp tables 
+
+```{r eval=FALSE}
+
+# load old & young t-degs
+o_tdegs <- read.csv('/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/ODC_Old_tDEGs.csv')
+rownames(o_tdegs) <- o_tdegs$gene_id
+
+y_tdegs <- read.csv('/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/ODC_Young_tDEGs.csv')
+rownames(y_tdegs) <- y_tdegs$gene_id
+
+y_tdegs %>% dplyr::select(-c(term)) %>% 
+  write.csv(file = 'supp_tables/tDEGs_young.csv', row.names=FALSE, quote=FALSE)
+
+o_tdegs %>% dplyr::select(-c(term)) %>% 
+  write.csv(file = 'supp_tables/tDEGs_aged.csv', row.names=FALSE, quote=FALSE)
+
+
+
+
+
+
+
+validation_tfs <- c('Sox10', 'Nkx2-2', 'Nkx6-2', 'Tcf4', 'Olig1', 'Olig2', 'Bach2', 'Sox8', 'Elf2', 'Bhlhe41', 'Nr6a1', 'Stat3', 'Foxk2')
+
+
+# define the grey genes
+modules_oligo <- GetModules(seurat_hd, wgcna_name = 'oligo')
+modules_opc <- GetModules(seurat_hd, wgcna_name = 'opc')
+grey_genes <- unique(c(
+  subset(modules_oligo, module == 'grey') %>% .$gene_name,
+  subset(modules_opc, module == 'grey') %>% .$gene_name
+))
+grey_genes <- grey_genes[!(grey_genes %in% c(validation_tfs))]
+
+
+
+# load regulon + full network 
+old_regulons <- read.csv(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", cur_celltype, '_', "Old", '_tf_regulons.csv'))
+
+
+# load regulon + full network 
+young_regulons <- read.csv(file=paste0("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/", 'ODC', '_', "Young", '_tf_regulons.csv'))
+
+cols_keep <- c('source', 'target', 'cor', 'Gain', 'bs_group', 'source_bin', 'target_bin')
+
+young_regulons %>%
+  dplyr::select(all_of(cols_keep)) %>%   
+    subset(!(target %in% grey_genes)) %>% 
+    subset(!(source %in% grey_genes)) %>% 
+  write.csv(file = 'supp_tables/TF_regulons_young.csv', row.names=FALSE, quote=FALSE)
+
+old_regulons %>%
+  dplyr::select(all_of(cols_keep)) %>%   
+    subset(!(target %in% grey_genes)) %>% 
+    subset(!(source %in% grey_genes)) %>% 
+  write.csv(file = 'supp_tables/TF_regulons_aged.csv', row.names=FALSE, quote=FALSE)
+
+
+```
+
+Plot the human snRNA-seq datasets 
+
+```{r eval=FALSE}
+
+# human MS datasets
+seurat_ab <- readRDS(file='/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/seurat_objects/Absinta_2021.rds')
+seurat_sh <- readRDS(file='/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/seurat_objects/Schirmer_2019.rds')
+
+
+# Plot the UMAPs
+p1 <- PlotEmbedding(
+  seurat_ab,
+  group.by = 'cell_type',
+  point_size=0.1,
+  raster=TRUE,
+  raster_dpi=500,
+  plot_theme = umap_theme()
+) + ggtitle("")
+
+
+# Plot the UMAPs
+p2 <- PlotEmbedding(
+  seurat_ab,
+  group.by = 'leiden',
+  point_size=0.1,
+  raster=TRUE,
+  raster_dpi=500,
+  plot_theme = umap_theme()
+) + ggtitle("")
+
+pdf(paste0(fig_dir, 'umap_seurat_Absinta.pdf'), width=12, height=5)
+p1 | p2
+dev.off()
+
+# Plot the UMAPs
+p1 <- PlotEmbedding(
+  seurat_sh,
+  group.by = 'cell_type',
+  point_size=0.1,
+  raster=TRUE,
+  raster_dpi=500,
+  plot_theme = umap_theme()
+) + ggtitle("")
+
+
+# Plot the UMAPs
+p2 <- PlotEmbedding(
+  seurat_sh,
+  group.by = 'leiden',
+  point_size=0.1,
+  raster=TRUE,
+  raster_dpi=500,
+  plot_theme = umap_theme()
+) + ggtitle("")
+
+pdf(paste0(fig_dir, 'umap_seurat_Schirmer.pdf'), width=12, height=5)
+p1 | p2
+dev.off()
+
+```
+
+Summarize the differential expression results 
+
+Should also make the scatter plots like I have in the serpentine snakemake ppln 
+
+```{r eval=FALSE}
+
+
+# need to copy from HPC3
+filedir <- "/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/DEGs/mouse/"
+timepoints <- c('Naive', 'Day5', 'Day14', 'Day30')
+
+mouse_degs <- data.frame()
+for(tp in timepoints){
+  
+  print(tp)
+  degs <- read.csv(paste0(filedir, tp, '_DEGs.csv'))
+  degs$timepoint <- tp 
+  mouse_degs <- rbind(mouse_degs, degs)
+
+}
+
+# write the combined mouse deg table as a supp figure 
+write.csv(mouse_degs, file = "supp_tables/DEGs_mouse_Aged_vs_Young.csv", quote=FALSE, row.names=FALSE)
+
+mouse_degs %>% subset(p_val_adj <= 0.05) %>%
+  write.csv(file = "supp_tables/DEGs_mouse_Aged_vs_Young_signif.csv", quote=FALSE, row.names=FALSE)
+
+# Define bins: lower and upper bounds
+bin_edges <- c(0.1, 0.5, 1.0, Inf)
+bin_labels <- c("0.1–0.5", "0.5–1.0", ">=1.0")
+
+plot_list <- list()
+for(cur_tp in c("Naive", "Day5", "Day14", "Day30")){
+
+
+    # Subset once
+    plot_df <- mouse_degs %>%
+    filter(
+        p_val_adj <= 0.05,
+        abs(avg_log2FC) >= 0.1,
+        timepoint == cur_tp
+    ) %>%
+    mutate(
+        fc_bin = cut(
+        abs(avg_log2FC),
+        breaks = bin_edges,
+        labels = bin_labels,
+        right = FALSE  # interval is [lower, upper)
+        )
+    ) %>%
+    filter(!is.na(fc_bin))
+
+    # Count upregulated
+    df_up <- plot_df %>%
+    filter(avg_log2FC > 0) %>%
+    group_by(group, fc_bin) %>%
+    summarise(n = n(), .groups = "drop")
+
+    # Count downregulated (negate so bars go down)
+    df_down <- plot_df %>%
+    filter(avg_log2FC < 0) %>%
+    group_by(group, fc_bin) %>%
+    summarise(n = -n(), .groups = "drop")
+
+    # Combine
+    plot_df_all <- bind_rows(df_up, df_down)
+
+    # Compute total DEGs per group (up + down, abs)
+    group_order <- plot_df_all %>%
+    group_by(group) %>%
+    summarise(total = sum(abs(n))) %>%
+    arrange(desc(total))
+
+    # Reorder factor by total DEGs
+    plot_df_all <- plot_df_all %>%
+    mutate(group = factor(group, levels = group_order$group))
+
+
+    # Plot with dodge for cutoff
+    p <- ggplot(plot_df_all, aes(x = group, y = n, alpha=fc_bin, group = fc_bin)) +
+    geom_bar(position='stack', stat='identity', fill='black') +
+    geom_hline(yintercept = 0, color = 'black') +
+    labs(
+        y = expression(N[DEGs]),
+        x = "Group",
+        fill = "Group"
+    ) +
+    scale_alpha_manual(values = c(0.4, 0.7, 1)) +
+    RotatedAxis() + xlab('') +
+    ggtitle(paste0("Aged vs. Young, ", cur_tp)) + theme(
+        plot.title = element_text(hjust=0.5)
+    )
+
+    plot_list[[cur_tp]] <- p
+
+}
+
+
+pdf(paste0(fig_dir, 'mouse_DEGs_barplot.pdf'), width=12, height=8)
+patchwork::wrap_plots(plot_list, ncol=2) + patchwork::plot_layout(guides='collect')
+dev.off()
+
+
+
+# library(plotly)
+# library(htmlwidgets)
+# saveWidget(plotly::ggplotly(p), file="figures/test.html")
+
+
+```
+
+```{r eval=FALSE}
+
+
+filedir <- "/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/processed/DEGs/human/"
+deg_files <- dir(filedir)
+human_degs  <- data.frame()
+for(i in 1:length(deg_files)){
+
+   deg_file <- deg_files[i]
+  if(grepl('TF', deg_file)){
+    next
+  } 
+  name <- gsub('_degs.csv', '',deg_file)
+  print(name)
+  degs <- read.csv(paste0(filedir,deg_file))
+  degs$comparison <- name
+  human_degs <- rbind(human_degs, degs)
+}
+
+write.csv(human_degs, file = "supp_tables/DEGs_human_MS_vs_normal.csv", quote=FALSE, row.names=FALSE)
+
+human_degs %>% subset(p_val_adj <= 0.05) %>%
+  write.csv(file = "supp_tables/DEGs_human_MS_vs_normal_signif.csv", quote=FALSE, row.names=FALSE)
+
+
+# Define bins: lower and upper bounds
+bin_edges <- c(0.1, 0.5, 1.0, Inf)
+bin_labels <- c("0.1–0.5", "0.5–1.0", ">=1.0")
+
+plot_list <- list()
+for(cur_tp in unique(human_degs$comparison)){
+
+
+    # Subset once
+    plot_df <- human_degs %>%
+    filter(
+        p_val_adj <= 0.05,
+        abs(avg_log2FC) >= 0.1,
+        comparison == cur_tp
+    ) %>%
+    mutate(
+        fc_bin = cut(
+        abs(avg_log2FC),
+        breaks = bin_edges,
+        labels = bin_labels,
+        right = FALSE  # interval is [lower, upper)
+        )
+    ) %>%
+    filter(!is.na(fc_bin))
+
+    # Count upregulated
+    df_up <- plot_df %>%
+    filter(avg_log2FC > 0) %>%
+    group_by(group, fc_bin) %>%
+    summarise(n = n(), .groups = "drop")
+
+    # Count downregulated (negate so bars go down)
+    df_down <- plot_df %>%
+    filter(avg_log2FC < 0) %>%
+    group_by(group, fc_bin) %>%
+    summarise(n = -n(), .groups = "drop")
+
+    # Combine
+    plot_df_all <- bind_rows(df_up, df_down)
+
+    # Compute total DEGs per group (up + down, abs)
+    group_order <- plot_df_all %>%
+    group_by(group) %>%
+    summarise(total = sum(abs(n))) %>%
+    arrange(desc(total))
+
+    # Reorder factor by total DEGs
+    plot_df_all <- plot_df_all %>%
+    mutate(group = factor(group, levels = group_order$group))
+
+
+    # Plot with dodge for cutoff
+    p <- ggplot(plot_df_all, aes(x = group, y = n, alpha=fc_bin, group = fc_bin)) +
+    geom_bar(position='stack', stat='identity', fill='black') +
+    geom_hline(yintercept = 0, color = 'black') +
+    labs(
+        y = expression(N[DEGs]),
+        x = "Group",
+        fill = "Group"
+    ) +
+    scale_alpha_manual(values = c(0.4, 0.7, 1)) +
+    RotatedAxis() + xlab('') +
+    ggtitle(paste0(cur_tp)) + theme(
+        plot.title = element_text(hjust=0.5)
+    )
+
+    plot_list[[cur_tp]] <- p
+
+}
+
+
+pdf(paste0(fig_dir, 'human_DEGs_barplot.pdf'), width=10, height=10)
+patchwork::wrap_plots(plot_list, ncol=2) + patchwork::plot_layout(guides='collect')
+dev.off()
+
+
+plot_df <- human_degs %>% subset(comparison == cur_tp) %>% dplyr::rename(cluster = group)
+
+p <- MultiVolcanoPlot(
+    plot_df,
+    signif_col = 'p_val_adj',
+    effect_col = 'avg_log2FC',
+    effect_thresh = 0.1,
+    raster_dpi=300
+)
+
+
+
+pdf(paste0(fig_dir, 'human_DEGs_multivolcano.pdf'), width=10, height=5)
+p
+dev.off()
+
+
+```
+
+QC plots w/ Signac 
+ 
+* nFragments vs. TSS Enrichment 
+
+* Fragment size dist per sample (group by batch?) --> Not going to show 
+
+* Violin plots --> need to re-make
+
+* Number of cells per library?
+
+```{r eval=FALSE}
+
+library(Signac)
+
+seurat_integrated <- readRDS('/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/seurat_objects/coembed_in_progress.rds')
+
+
+# load the ATAC & RNA objects separately, and subset just by the oligo lineage cells:
+seurat_atac <- readRDS('/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/seurat_objects/signac_final_07-02-21_update.rds')
+DefaultAssay(seurat_atac) <- 'peaks'
+
+seurat_atac <- Signac::NucleosomeSignal(seurat_atac)
+
+atac_ix <- na.omit(match(colnames(seurat_atac), colnames(seurat_integrated)))
+atac_umap <- seurat_integrated@reductions$umap@cell.embeddings[atac_ix,]
+
+seurat_atac@reductions$integrated_umap <- CreateDimReducObject(
+  embeddings = atac_umap,
+  key='UMAP_',
+  assay='RNA'
+)
+
+
+
+
+p <- seurat_atac@meta.data %>% 
+    ggplot(aes(x = log10(nFrags), y = TSSEnrichment)) + 
+    ggrastr::rasterise(geom_point(color='black', alpha=0.25), dpi=200) +
+    geom_density_2d() +
+    geom_vline(xintercept = log10(1000), linetype='dashed', color='grey') + 
+    geom_hline(yintercept = 4, linetype='dashed', color='grey') 
+    
+   # ggrastr::rasterise(geom_hex(), dpi=200)
+
+patch <- p + facet_wrap(~Sample, ncol=4)
+
+pdf(paste0(fig_dir, 'snATAC_QC_nFrag_vs_TSSEnrichment.pdf'), width=12, height=12)
+print(patch)
+dev.off()
+
+
+
+p <- Signac::FragmentHistogram(
+    seurat_atac,
+    group.by = "Batch"
+)
+
+reads <- Signac:::MultiGetReadsInRegion(
+    object = seurat_atac,
+    assay = NULL,
+    region = "chr1-1-2000000",
+    cells = colnames(seurat_atac),
+    verbose = FALSE,
+)
+
+
+
+pdf(paste0(fig_dir, 'snATAC_QC_fragment_lengths'), width=12, height=12)
+print(p)
+dev.off()
+
+
+p <- seurat_atac@meta.data %>% 
+    ggplot(aes(x = log10(nFrags), y = TSSEnrichment)) + 
+    ggrastr::rasterise(geom_point(color='black', alpha=0.25), dpi=200) +
+    geom_density_2d() +
+    geom_vline(xintercept = log10(1000), linetype='dashed', color='grey') + 
+    geom_hline(yintercept = 4, linetype='dashed', color='grey') 
+    
+   # ggrastr::rasterise(geom_hex(), dpi=200)
+
+patch <- p + facet_wrap(~Sample, ncol=4)
+
+pdf(paste0(fig_dir, 'snATAC_QC_nFrag_vs_TSSEnrichment.pdf'), width=12, height=12)
+print(patch)
+dev.off()
+
+
+seurat_obj <- subset(seurat_atac, Sample == "Y_Naive")
+
+bcs <- do.call(rbind, strsplit(colnames(seurat_obj), '_'))[,3]
+
+reads <- Signac:::MultiGetReadsInRegion(
+    object = seurat_atac,
+    assay = NULL,
+    region = "chr1-1-2000000",
+    cells = bcs,
+    verbose = FALSE,
+)
+
+
+```
+
+snRNA-seq marker genes 
+
+Show the expression of these marker genes using the snATAC gene activity?
+
+```{r eval=FALSE}
+
+seurat_rna <- readRDS("/home/groups/singlecell/smorabito/PhD_ongoing/AMRF/seurat_objects/NucSeq_final_doublets_removed_online_inmf_seurat.rds")
+
+
+
+DefaultAssay(seurat_atac) <- 'GeneActivity'
+
+markers <- read.csv(paste0(data_dir, "DEGs/mouse/cluster_markers.csv"))
+
+
+################################################################################
+# Heatmap using top N genes per cluster
+################################################################################
+
+seurat_rna$barcode <- colnames(seurat_rna)
+temp <- seurat_rna@meta.data %>% group_by(ordered_clusters) %>% sample_n(250)
+
+seurat_rna$subcluster_name <- ifelse(grepl('PIM', seurat_rna$subcluster_name), 'PIM', seurat_rna$subcluster_name)
+seurat_rna$ordered_clusters <- factor(
+  as.character(seurat_rna$subcluster_name),
+  levels = snRNA_colors$group
+)
+degs$group<- )
+
+deg_file <- "/dfs3b/swaruplab/smorabit/collab/AMRF/analysis/DEGs/data/cluster_markers.csv"
+degs <- markers
+degs$group<- ifelse(grepl('PIM', degs$group), 'PIM', degs$group)
+degs$group <- factor(
+  degs$group,
+  levels = snRNA_colors$group
+)
+
+n_degs <- 3
+plot_genes <- degs %>%
+  arrange(group) %>%
+  subset(p_val_adj <= 0.05) %>%
+  group_by(group) %>%
+  top_n(n_degs, wt=avg_log2FC)  %>%
+  .$gene
+
+
+seurat_rna <- ScaleData(seurat_rna, features=plot_genes)
+
+# make heatmap
+p <- DoHeatmap(
+  seurat_rna %>% subset(barcode %in% temp$barcode),
+  features=plot_genes,
+  group.by='ordered_clusters',
+  raster=TRUE, slot='scale.data',
+  group.colors=snRNA_cp
+)
+
+pdf(paste0(fig_dir, 'marker_gene_heatmap_DEGs.pdf'), width=16, height=10, useDingbats=FALSE)
+p
+dev.off()
+
+################################################################################
+# snATAC GeneActivity Heatmap!!
+################################################################################
+
+seurat_atac$subcluster_name <- ifelse(is.na(seurat_atac$subcluster_name), 'Neuron', as.character(seurat_atac$subcluster_name))
+
+seurat_atac$subcluster_name <- factor(
+  as.character(seurat_atac$subcluster_name),
+  levels = c(
+    'NFOL', 'OPC', 'MF-ODC', 'Int-ODC', 'Mat-ODC',
+    'MG.a', 'MG.b', 'MG.c', 'MM', 'PIM', 'ASC.a', 'ASC.b',
+    'Neuron', 'END', 'PER.a', 'PER.b', 'VLMC'
+  )
+)
+
+seurat_atac <- ScaleData(seurat_atac, features=plot_genes)
+
+
+seurat_atac$barcode <- colnames(seurat_atac)
+temp <- table(seurat_atac@meta.data$subcluster_name)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 250){
+    cur_df <- seurat_atac@meta.data %>% subset(subcluster_name == names(temp)[i])
+  } else{
+    cur_df <- seurat_atac@meta.data %>% subset(subcluster_name == names(temp)[i]) %>% sample_n(250)
+  }
+  df <- rbind(df, cur_df)
+}
+
+
+# make heatmap
+p <- DoHeatmap(
+  seurat_atac %>% subset(barcode %in% df$barcode),
+  features=plot_genes,
+  group.by='subcluster_name',
+  raster=TRUE, slot='scale.data',
+  #group.colors=snRNA_cp
+) # + scale_fill_gradient2(high='dodgerblue4', mid='white ', low='darkgoldenrod4')
+
+pdf(paste0(fig_dir, 'marker_gene_heatmap_DEGs_ATAC.pdf'), width=10, height=10, useDingbats=FALSE)
+p
+dev.off()
+
+
+```
+
+snATAC + snRNA integration 
+
+Show label transfer scores on the snATAC 
+
+```{r eval=FALSE}
+
+
+
+seurat_atac$predicted.cluster <- factor(
+  seurat_atac$predicted.cluster,
+  levels = c(
+    'OPC','NFOL',  'MF-ODC', 'Int-ODC', 'Mat-ODC',
+    'MG1', 'MG2', 'MG3', 'MG4', 'MG5', 'MG6', 'MG7', 'MM', 'PIM',
+    'ASC1', 'ASC2', 'ASC3',
+    'Neuron1', 'Neuron2', 'Neuron3', 'Neuron4', "Neuron5",
+    'EPD','END',  'PER', 'VLMC', 'SCH'
+  )
+)
+
+
+# plot the embedding:
+
+# Plot the UMAPs
+p1 <- PlotEmbedding(
+  seurat_atac,
+  group.by = 'predicted.cluster',
+  point_size=0.1,
+  raster=TRUE,
+  raster_dpi=400,
+  raster_scale = 0.5,
+  reduction = 'integrated_umap',
+  plot_theme = umap_theme(),
+  label = FALSE,
+  color_df = snRNA_colors
+) + ggtitle("")
+
+
+
+pdf(paste0(fig_dir, 'snATAC_umap_predicted_label.pdf'), width=8, height=7)
+p1 
+dev.off()
+
+
+library(ggsankey)
+
+
+
+
+sankey_df <- seurat_atac@meta.data %>% 
+  ggsankey::make_long(subcluster_name, predicted.cluster)
+
+p <- ggplot(sankey_df, aes(x = x, 
+               next_x = next_x, 
+               node = node, 
+               next_node = next_node,
+               fill = factor(node),
+               label = node)) +
+  geom_sankey() +
+  geom_sankey_label(size=2, color='white') +
+  theme_sankey(base_size = 16) + NoLegend()
+
+
+pdf(paste0(fig_dir, 'snATAC_label_transfer_sankey_plot.pdf'), width=6, height=10)
+p
+dev.off()
+
+
+
+
+
+
+
+
+library(tidyverse)
+library(patchwork)
+library(RColorBrewer)
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+
+group <- 'subcluster_name'
+group <- 'subcluster'
+
+dir.create(paste0(fig_dir, 'label_transfer_', group))
+
+# Plot prediction scores for some clusters:
+DefaultAssay(seurat_atac) <- "predictions"
+prediction_matrix <- GetAssayData(seurat_atac, assay='predictions')
+
+p1 <- DimPlot(seurat_atac, group.by=group, label=TRUE) + umap_theme() + NoLegend()
+for(label in rownames(seurat_atac)[rowSums(prediction_matrix) > 0]){
+
+  name <- gsub(' ', '_', label)
+  name <- gsub('/', '_', label)
+  print(name)
+
+  # umap feature plot
+  p2 <- FeaturePlot(seurat_atac, features=label, order=TRUE) +
+    scale_color_gradientn(colors=colfunc(256), guide = guide_colorbar(barwidth=15, barheight=0.5, ticks=FALSE)) +
+    umap_theme() + theme(legend.position='bottom')
+
+
+  # cluster violin plot:
+  p3 <- VlnPlot(seurat_atac, group.by=group, features=label, pt.size=0) +
+   NoLegend() + ggtitle('') +
+   ylab(paste(label, 'score')) + xlab('clusters')
+
+  # patchwork
+  patch <- (p1 + p2) / p3
+
+  pdf(paste0(fig_dir, 'label_transfer_', group, '/', gsub(' ', '_', name), '.pdf'), width=9, height=9, useDingbats=FALSE)
+  print(patch + plot_layout(heights=c(2,1)))
+  dev.off()
+}
+
+# DotPlot for all prediction scores:
+colfunc <- colorRampPalette(c(rev(brewer.pal(9, 'Purples' )[2:9]), 'white'))
+
+
+prediction_features <- rownames(seurat_atac)[order(rownames(seurat_atac))]
+prediction_features <- prediction_features[prediction_features != 'max']
+p <- DotPlot(
+    seurat_atac, 
+    features=prediction_features, 
+    group.by="subcluster_name", 
+    dot.min=0.20,
+    scale=FALSE 
+  ) +
+  RotatedAxis() +
+    scale_color_gradient2( name='Prediction Score',
+    high = 'darkorchid3', mid='pink', low='grey95',
+    guide = guide_colorbar(barwidth=0.5, barheight=20, ticks=FALSE, label=FALSE)
+) +
+  ylab('snATAC-seq clusters') + xlab('snRNA-seq clusters')
+
+pdf(paste0(fig_dir, 'label_transfer_prediction_dotplot.pdf'), width=10, height=6, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+
+
+plot_feats <- c(levels(seurat_atac$predicted.cluster), 'max')
+plot_feats <- plot_feats[plot_feats %in% rownames(seurat_atac)]
+
+
+patch <- FeatureEmbedding(
+  seurat_atac,
+  features = plot_feats ,
+  raster=TRUE, dpi=300,
+  reduction = 'integrated_umap',
+  ncol = 5,
+  plot_max = 'q99'
+)
+
+pdf(paste0(fig_dir, 'snATAC_label_transfer_prediction_umap.pdf'), width=15, height=18, useDingbats=FALSE)
+patch
+dev.off()
+
+
+
+```
