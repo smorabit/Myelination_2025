@@ -87,7 +87,7 @@ Finally, we synthesize this information to prioritize TFs for further study with
 
 * [Prioritize TFs for downstream experiments, additional plotting](integration/prioritize_TFs.Rmd)
 
-## ⚡ Bulk RNA-seq in cell (Fig. 5)
+## ⚡ Bulk RNA-seq in cell models (Fig. 5)
 
 We performed bulk RNA-seq experiments in cell models where we over-expressed TFs of interest (Bach2, Bhlhe41, Elf2, Foxk2, Nr6a1, Sox8, and Stat3).
 
