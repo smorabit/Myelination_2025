@@ -28,7 +28,7 @@ snATAC-seq and snRNA-seq were performed **separately** in mouse spinal cord sect
 
 ### 🌳 Clustering
 
-We first performed clustering analysis for ATAC and RNA separately. This clustering analysis includes a batch correction step to correct for the effect of different sequencing batches, using **[harmony](https://github.com/immunogenomics/harmony)** for snRNA-seq and **[Liger](https://github.com/welch-lab/liger)** for snATAC-seq.
+We first performed clustering analysis for ATAC and RNA separately. This clustering analysis includes a batch correction step to correct for the effect of different sequencing batches, using **[harmony](https://github.com/immunogenomics/harmony)** for snATAC-seq and **[Liger](https://github.com/welch-lab/liger)** for snRNA-seq.
 
 * [snATAC-seq clustering analysis with ArchR + Harmony](snATAC/clustering/snATAC_clustering.Rmd)
 * [snRNA-seq clustering analysis with Seurat + Liger](snRNA/clustering/snRNA_clustering.Rmd)
