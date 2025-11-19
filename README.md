@@ -1,17 +1,17 @@
 
-# Dysregulation of transcriptional networks regulating oligodendrogenesis in age-related decline in CNS remyelination
+# Dysregulation of transcription networks regulating oligodendrogenesis in age-related decline in CNS remyelination
 
-Dimas, Morabito, & Rawji et al. 2025 (TODO: Link to the manuscript here)
+[Dimas, Morabito & Rawji et al. 2025 (bioRxiv)](https://www.biorxiv.org/content/10.1101/2025.11.14.688494v1)
 
 ## Abstract
 
-*In demyelinating diseases like multiple sclerosis, efficient remyelination is critical for functional recovery. Remyelination loses efficiency with age, and is linked to progressive disability. The gene regulatory network underlying remyelination, and how it is altered with aging, remains unclear. Here we present a comparative single-nucleus RNA and ATAC sequencing analysis of remyelination in young and aged mice. We identified gene modules dynamically expressed throughout oligodendrocyte maturation, revealing age-dependent changes in key processes related to myelination. Multi-omic analysis allowed us to map the regulatory network driving efficient remyelination within oligodendrocyte lineage cells in young mice. We highlight key transcription factors in the network dysregulated with age, and we describe similar TF dysregulations in human MS lesions. Modifying the expression of these TFs in primary oligodendrocyte progenitor cells impacts proliferation and differentiation. These findings provide a foundational understanding of this regenerative process in the context of ageing and in chronic demyelinating diseases.*
+*In demyelinating diseases like multiple sclerosis (MS), efficient remyelination is critical for functional recovery. Remyelination efficiency declines with age, and is linked to progressive disability. The gene regulatory network underlying remyelination, and how it is altered with aging, remains unclear. Here we present a comparative single-nucleus RNA and ATAC sequencing analysis of remyelination in young and aged mice. We identified gene modules dynamically expressed throughout oligodendrocyte differentiation, revealing age-dependent changes in key processes related to myelination. Multi-omic analysis allowed us to map the regulatory network driving efficient remyelination within oligodendrocyte lineage cells in young mice. We highlight key transcription factors in the network dysregulated with age, and we describe similar dysregulations in MS lesions. Modifying the expression of these transcription factors in primary oligodendrocyte progenitor cells impacts differentiation. These findings provide a foundational understanding of this regenerative process in the context of aging and in chronic demyelinating diseases.*
 
 ## About this repository
 
-This repository contains the code used for the data analysis associated with **Dimas, Morabito, Rawji *et al.* bioRxiv (2025)**. The sections of the `README` below follow the same flow as the mannuscript, linking to the relevant script(s) for each of the data analysis steps. 
+This repository contains the code used for the data analysis associated with **[Dimas, Morabito & Rawji *et al.* bioRxiv (2025)](https://www.biorxiv.org/content/10.1101/2025.11.14.688494v1)**. The sections of the `README` below follow the same flow as the mannuscript, linking to the relevant script(s) for each of the data analysis steps. 
 
-These scripts can be used to reproduce the results starting from the raw sequencing reads downloaded from GEO, or from the processed data objects. Please note that the file paths included in these scripts are relative to the UCI HPC3 or the CNAG cluster, and these paths must be updated in order to run these scripts on a different machine. 
+These scripts can be used to reproduce the results starting from the raw sequencing reads downloaded from GEO, or from the processed data objects. Please note that the file paths included in these scripts are relative to the UCI HPC3 or the CNAG cluster, and these paths must be updated in order to run these scripts on a different machine. **The data will be made publicly available upon final publication of this study, and peer reviewers have been provided with a GEO access code.**
 
 ## 🖥️ Data generated in this study 
 
