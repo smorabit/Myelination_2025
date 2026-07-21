@@ -1,0 +1,11 @@
+# Python byte-compilation + OS cruft (never part of the deposit)
+__pycache__/
+*.pyc
+.DS_Store
+
+# Real samplesheet carries sample IDs and is never committed; the template is.
+samplesheet.csv
+samplesheet_*.csv
+
+# Generated outputs (regenerated from code + staged data; not committed)
+# Figures land under docs/images or Manuscript/manuscript_figures at your data root.

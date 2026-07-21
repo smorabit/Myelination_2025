@@ -1,0 +1,16 @@
+species,sample_id,label,age_group,status,slide,flagged
+mouse,MOUSE_ID_YOUNG1,Young 1,Young,cohort9,,
+mouse,MOUSE_ID_YOUNG2,Young 2,Young,cohort9,,
+mouse,MOUSE_ID_YOUNG3,Young 3,Young,cohort9,,
+mouse,MOUSE_ID_YOUNG4,Young 4,Young,cohort9,,
+mouse,MOUSE_ID_YOUNG5,Young 5,Young,cohort9,,
+mouse,MOUSE_ID_OLD1,Old 1,Old,cohort9,,
+mouse,MOUSE_ID_OLD3,Old 3,Old,cohort9,,
+mouse,MOUSE_ID_OLD4,Old 4,Old,cohort9,,
+mouse,MOUSE_ID_OLD5,Old 5,Old,cohort9,,
+mouse,MOUSE_ID_OLD2_OUTLIER,Old 2,Old,outlier,,
+mouse,MOUSE_ID_EXCLUDED1,,,excluded,,
+mouse,MOUSE_ID_EXCLUDED2,,,excluded,,
+human,HUMAN_XENIUM_DIR_1,region-1,,used,slide-1,false
+human,HUMAN_XENIUM_DIR_2,region-2,,used,slide-1,true
+human,HUMAN_XENIUM_DIR_3,region-3,,used,slide-2,false
