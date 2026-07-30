@@ -50,7 +50,7 @@ figure driver can also run on its own once the compute tables are staged:
 
 **Mouse spatial (supplementary).**
 
-- Cell-type annotation: the markers defining the three oligo-lineage cell types (OPC / Intermediate / Mature) are in [`shared/annotate_celltypes.py`](shared/annotate_celltypes.py) (a marker table, not a generated figure).
+- Cell-type annotation: the markers defining the three oligo-lineage cell types (OPC / Intermediate / Mature) live in [`shared/annotate_celltypes.py`](shared/annotate_celltypes.py) as constants (a marker table, so there's no separate plotting script).
 - Age-related delay in oligodendrocyte differentiation reproduced (3 boxplots, one per cell type, Young vs Old within-lineage proportions): [`mouse/composition/plot_lesion_lineage_proportions.py`](mouse/composition/plot_lesion_lineage_proportions.py) on [`compute_lesion_celltype_composition.py`](mouse/composition/compute_lesion_celltype_composition.py).
 - 50-gene panel + secondary targets/inducers: [`mouse/extract_panel_composition.py`](mouse/extract_panel_composition.py).
 - Genuine TF expression in day-14 lesions, signal-to-noise vs platform noise: [`mouse/expression/plot_signal_to_noise.py`](mouse/expression/plot_signal_to_noise.py) on [`compute_expression_evidence.py`](mouse/expression/compute_expression_evidence.py).
