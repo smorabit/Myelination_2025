@@ -69,7 +69,7 @@ from spatial_common import (
 IMAGES_DIR = REPO_ROOT / "docs" / "images"
 DEFAULT_STRATEGY = "stringent_p5"
 
-# Shared palettes (mirrors plot_expression_heatmap.py).
+# Shared palettes.
 AGE_COLORS = {"Young": "#6a5acd", "Old": "#2e8b57"}  # slateblue / seagreen
 CELL_TYPE_COLORS = {
     "OPC": "#b23aee",  # darkorchid2

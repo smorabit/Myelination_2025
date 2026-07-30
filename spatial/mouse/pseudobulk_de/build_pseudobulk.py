@@ -15,10 +15,10 @@ Outputs (per strategy, under data/pseudobulk/{strategy}/):
                              per_cell_min_transcripts
   _drop_log.csv              dropped (sample, cell_type) combos with reason
 
-Canonical pipeline uses --per_cell_min_transcripts 10 per the 2026-05-11 spike
-(plans/2026-05-11_SPIKE_tf-zero-expression-filtering_report.md). The pre-spike
-behaviour (no per-cell QC) corresponds to --per_cell_min_transcripts 5, which
-matches the cell-calling pipeline's min_mols_per_cell floor.
+Canonical pipeline uses --per_cell_min_transcripts 10 (the validated per-cell QC
+floor). The pre-QC behaviour (no per-cell filtering) corresponds to
+--per_cell_min_transcripts 5, which matches the cell-calling pipeline's
+min_mols_per_cell floor.
 """
 
 from __future__ import annotations
@@ -87,8 +87,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Per-cell QC floor on transcript_counts (panel-gene total per cell). "
             "Cells below this are excluded before pseudobulk aggregation. "
-            "Default 10 is the canonical value per the 2026-05-11 spike "
-            "(plans/2026-05-11_SPIKE_tf-zero-expression-filtering_report.md); "
+            "Default 10 is the canonical per-cell QC value; "
             "set to 5 to reproduce pre-migration pseudobulks."
         ),
     )

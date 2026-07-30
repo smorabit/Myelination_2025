@@ -1,18 +1,19 @@
 #!/usr/bin/env Rscript
-# DE results visualization for stringent strategy:
+# DE results visualization. Args: <strategy> <suffix_tag> <barplot_method>
+# (canonical: stringent_p5 outlier_rm counts, then a second vst run for volcanoes/heatmap).
 #   - Per-gene barplot: 3 cell types on x-axis, Young vs Old fill, individual sample dots
 #   - Volcano plot per cell type
 #   - Heatmap of log2FC across hypothesis genes x cell types
 #
-# Inputs:
-#   data/de_results/stringent/_combined_de.csv
-#   data/de_results/stringent/{cell_type}_vst.csv
-#   data/pseudobulk/stringent/{cell_type}_coldata.csv
+# Inputs (suffixed by the chosen strategy/tag):
+#   data/de_results/{strategy}/_combined_de_{tag}.csv
+#   data/de_results/{strategy}/_combined_vst_{tag}.csv
+#   data/pseudobulk/{strategy}/{cell_type}_coldata.csv
 #
-# Outputs (to docs/images/, gitignore-allowed):
-#   de_barplot_{gene}_stringent.png   one per hypothesis gene (38 files)
-#   de_volcano_{cell_type}_stringent.png   3 files
-#   de_heatmap_log2fc_stringent.png   1 file
+# Outputs (to docs/images/):
+#   de_barplot_{gene}_{strategy}_{tag}[_counts].png   one per hypothesis gene
+#   de_volcano_{cell_type}_{strategy}_{tag}.png       one per cell type
+#   de_heatmap_log2fc_{strategy}_{tag}.png
 
 suppressPackageStartupMessages({
   library(dplyr)

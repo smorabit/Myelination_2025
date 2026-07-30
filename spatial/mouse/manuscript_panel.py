@@ -31,7 +31,7 @@ Run (under the xenium-processing env):
     micromamba activate xenium-processing
     export XENIUM_RAW_DIR=/path/to/mouse/xenium/bundle
     export HUMAN_TX_DIR=/path/to/human/transcripts
-    PYTHONPATH=scripts python scripts/manuscript_panel.py all
+    python manuscript_panel.py all
     python manuscript_panel.py B --tf-set top6 --samples <MOUSE_SAMPLE_ID>
 
 Outputs: Manuscript/manuscript_figures/*.{pdf,png}

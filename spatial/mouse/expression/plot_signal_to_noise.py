@@ -4,12 +4,11 @@
 Reads `data/expression_evidence/expression_per_sample_celltype_<strategy>.csv`
 (produced by `scripts/compute_expression_evidence.py`, which must already have
 been extended to include negative-control pseudo-rows) and renders a single
-box+strip figure comparing the distribution of mean counts per cell across 5
+box+strip figure comparing the distribution of mean counts per cell across 4
 biological/technical categories:
 
   Negative controls (Xenium platform: control_probe, genomic_control,
                      unassigned_codeword — pooled)
-  Pancreas controls (Cpa1, Spink1, Nupr1)
   Targets / inducers (29 secondary hypothesis genes)
   Primary TFs (9 hypothesis TFs)
   Markers (9 cell-type-defining genes)
@@ -27,9 +26,11 @@ Output: docs/images/signal_to_noise_distribution_<strategy>.png and .pdf
 """
 
 from __future__ import annotations
+
 # --- locate deposited module dirs (works from any depth) ------------------
 import sys as _sys
 from pathlib import Path as _Path
+
 for _p in _Path(__file__).resolve().parents:
     if (_p / "shared" / "spatial_common.py").exists():
         for _sub in ("shared",):

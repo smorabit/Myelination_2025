@@ -50,8 +50,8 @@ echo "== Stage 2: differential expression (R) =="
 # Outlier sample id comes from the samplesheet (cohort.py), the single source of truth.
 OUTLIER="$("${PY}" -c 'import cohort; print(cohort.outlier_sample())')"
 "${RSCRIPT}" "${M}/pseudobulk_de/de_young_vs_old_outlier_rm.R" "${STRAT}"              # canonical DE (outlier removed)
-"${RSCRIPT}" "${M}/pseudobulk_de/compute_combined_vst.R" "${STRAT}" || true            # full-cohort VST (PCA)
-"${RSCRIPT}" "${M}/pseudobulk_de/compute_combined_vst.R" "${STRAT}" "${OUTLIER}" || true  # outlier-removed VST (volcanoes + log2FC heatmap)
+"${RSCRIPT}" "${M}/pseudobulk_de/compute_combined_vst.R" "${STRAT}"            # full-cohort VST (PCA)
+"${RSCRIPT}" "${M}/pseudobulk_de/compute_combined_vst.R" "${STRAT}" "${OUTLIER}"  # outlier-removed VST (volcanoes + log2FC heatmap)
 
 echo "== Stage 3: expression evidence (Python) =="
 "${PY}" "${M}/expression/compute_expression_evidence.py"

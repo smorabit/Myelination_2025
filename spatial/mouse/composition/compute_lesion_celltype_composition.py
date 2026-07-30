@@ -228,8 +228,8 @@ def main() -> int:
                 "enrichment_ratio": round(pct_l / pct_o, 2) if pct_o else float("nan"),
             }
         )
-    cohort = pd.DataFrame(cohort_rows)
-    cohort.to_csv(OUTPUT_DIR / f"_cohort_summary_{strategy}.csv", index=False)
+    cohort_df = pd.DataFrame(cohort_rows)
+    cohort_df.to_csv(OUTPUT_DIR / f"_cohort_summary_{strategy}.csv", index=False)
 
     # Console report
     print()
@@ -255,7 +255,7 @@ def main() -> int:
 
     print()
     print("=== Cohort summary ===")
-    print(cohort.to_string(index=False))
+    print(cohort_df.to_string(index=False))
     print()
     print(
         f"Wrote per-sample, pivot, and cohort tables to {OUTPUT_DIR.relative_to(REPO_ROOT)}"

@@ -16,18 +16,19 @@ publication-ready dot plot:
                 [OPC-Y, OPC-O, Int-Y, Int-O, Mat-Y, Mat-O].
                 Old 2 excluded by default (5 Young + 4 Old samples averaged).
 
-This is the publication-ready companion to the per-sample heatmap produced by
-`plot_expression_heatmap.py`. The per-sample heatmap remains the QC view; this
-script provides a compact ~6.5 × 13 in main-text panel.
+This is the publication-ready aggregated dot plot for the main-text panel, a
+compact ~6.5 × 13 in summary of mean counts/cell per cell type and age.
 
 Output:
   docs/images/expression_evidence_dotplot_<strategy>_counts_no_old2.png + .pdf
 """
 
 from __future__ import annotations
+
 # --- locate deposited module dirs (works from any depth) ------------------
 import sys as _sys
 from pathlib import Path as _Path
+
 for _p in _Path(__file__).resolve().parents:
     if (_p / "shared" / "spatial_common.py").exists():
         for _sub in ("shared",):
