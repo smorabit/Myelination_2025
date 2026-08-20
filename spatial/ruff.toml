@@ -1,0 +1,10 @@
+# Ruff config for the deposited spatial-Xenium scripts.
+#
+# Every script inserts the shared/ module directory onto sys.path at runtime (the
+# short bootstrap block near the top of each file) BEFORE importing the shared
+# modules (plot_style / spatial_common / human_tf_common / annotate_celltypes).
+# Those imports must therefore come after executable code, so E402
+# (module-import-not-at-top-of-file) is expected throughout and suppressed here.
+
+[lint]
+ignore = ["E402"]

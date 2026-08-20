@@ -95,6 +95,12 @@ We performed bulk RNA-seq experiments in cell models where we over-expressed TFs
 * [TODO: Bulk RNA-seq differential expression analysis](bulkRNA/DEGs/)
 * [Bulk RNA-seq downstream plotting and comparison with single-nucleus data](bulkRNA/downstream/)
 
+## 🔬 Spatial transcriptomics with Xenium (supplementary)
+
+We ran 10x Xenium *in situ* on mouse spinal-cord lesions (young vs aged) and human MS lesion tissue, using custom 50-gene panels built around the prioritised transcription factors. The mouse data reproduce the age-related delay in oligodendrocyte differentiation and the differential TF expression seen in the single-nucleus analysis; the human data show the same factors are expressed above background in MS tissue, with Sox8 and Klk6 localising to oligodendrocyte-lineage cells.
+
+* [Spatial Xenium analysis (mouse + human): run order and per-figure scripts](spatial/README.md)
+
 ## Miscellaneous plotting and helper scripts
 
 Here are scripts that were used for additional plotting, and scripts containing helper functions.
